@@ -14,7 +14,7 @@ ROOT      = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 SRC_DIR   = os.path.join(ROOT, "autocad", "blocks")
 OUT_FILE  = os.path.join(ROOT, "app", "dxf", "block_data.py")
 
-BLOCKS = ("MTAP_BACKTAPER", "MTAP_GDT", "MTAP_DATUM")
+BLOCKS = ("MTAP_BACKTAPER", "MTAP_GDT", "MTAP_DATUM", "MTAP_TEMPLATE")
 
 
 def main() -> None:

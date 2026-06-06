@@ -149,6 +149,109 @@ _LIBRARY = r"""
       (progn (entmod (subst (cons 1 val) (assoc 1 ed) ed)) (entupd e)))
     (setq e (entnext e))))
 
+;; ── TEMPLATE: center the drawing inside the customer title-block window ───────
+;; Union the bounding boxes of every entity created AFTER 'startent' (the whole
+;; tool drawing: outline, dims, annotation blocks, note).  Returns (mn mx) or nil.
+(defun MTAP:range-bbox (startent / e o lo hi mn mx)
+  (setq e (if startent (entnext startent) (entnext)))
+  (while e
+    (setq o (vlax-ename->vla-object e))
+    (if (not (vl-catch-all-error-p
+               (vl-catch-all-apply 'vla-getboundingbox (list o 'lo 'hi))))
+      (progn
+        (setq lo (vlax-safearray->list lo)
+              hi (vlax-safearray->list hi))
+        (if mn (setq mn (list (min (car mn) (car lo)) (min (cadr mn) (cadr lo))))
+               (setq mn (list (car lo) (cadr lo))))
+        (if mx (setq mx (list (max (car mx) (car hi)) (max (cadr mx) (cadr hi))))
+               (setq mx (list (car hi) (cadr hi))))))
+    (setq e (entnext e)))
+  (if (and mn mx) (list mn mx) nil))
+
+;; Find the drawing-area rectangle inside a block DEFINITION by layer.
+;; Scans the block's sub-entities for anything on layer MTAP_WINDOW and unions
+;; its vertices (handles both LWPOLYLINE group-10 and LINE group-10/11).
+;; Returns (mn mx) in block-local coords, or nil.
+(defun MTAP:block-window (bname / e ed mn mx)
+  (setq e (cdr (assoc -2 (tblsearch "BLOCK" bname))))
+  (while e
+    (setq ed (entget e))
+    (if (= (strcase (cdr (assoc 8 ed))) "MTAP_WINDOW")
+      (foreach pr ed
+        (if (or (= 10 (car pr)) (= 11 (car pr)))
+          (progn
+            (if mn (setq mn (list (min (car mn) (cadr pr)) (min (cadr mn) (caddr pr))))
+                   (setq mn (list (cadr pr) (caddr pr))))
+            (if mx (setq mx (list (max (car mx) (cadr pr)) (max (cadr mx) (caddr pr))))
+                   (setq mx (list (cadr pr) (caddr pr))))))))
+    (setq e (entnext e)))
+  (if (and mn mx) (list mn mx) nil))
+
+;; Insert MTAP_TEMPLATE scaled so its MTAP_WINDOW wraps the tool bbox with a
+;; little margin, positioned so the WINDOW CENTER lands on the TOOL CENTER —
+;; i.e. the drawing is centered in the rectangle both horizontally & vertically.
+;; The TOOL stays true 1:1; only the TEMPLATE scales.  Returns the INSERT ename.
+(defun MTAP:place-template (bb / wn tmn tmx tcx tcy tw th
+                                  wmn wmx wcx wcy ww wh s ipx ipy margin)
+  (setq wn (MTAP:block-window "MTAP_TEMPLATE"))
+  (if (and bb wn)
+    (progn
+      (setq tmn (car bb)  tmx (cadr bb)
+            tw  (- (car tmx) (car tmn))   th  (- (cadr tmx) (cadr tmn))
+            tcx (/ (+ (car tmn) (car tmx)) 2.0)
+            tcy (/ (+ (cadr tmn) (cadr tmx)) 2.0)
+            wmn (car wn)  wmx (cadr wn)
+            ww  (- (car wmx) (car wmn))   wh  (- (cadr wmx) (cadr wmn))
+            wcx (/ (+ (car wmn) (car wmx)) 2.0)
+            wcy (/ (+ (cadr wmn) (cadr wmx)) 2.0)
+            margin 0.90)            ; tool fills up to 90% of the window
+      ;; scale template so the tool (incl. margin) fits in BOTH directions
+      (setq s (max (/ tw (* ww margin)) (/ th (* wh margin))))
+      ;; window-center(world) = IP + s*window-center(local)  =>  solve for IP
+      (setq ipx (- tcx (* s wcx))
+            ipy (- tcy (* s wcy)))
+      (princ (strcat "\n  template scale=" (rtos s 2 3)
+                     "  window=" (rtos ww 2 1) "x" (rtos wh 2 1)
+                     "  tool=" (rtos tw 2 1) "x" (rtos th 2 1)))
+      (setvar "CLAYER" "0")
+      (MTAP:ins-block "MTAP_TEMPLATE" (list ipx ipy) s))
+    (progn
+      (princ "\n*** MTAP: MTAP_WINDOW not found in template; border skipped.")
+      nil)))
+
+;; Fill the title-block attributes from the app's metadata and force the filled
+;; values YELLOW (color 2).  Tag matching is case-insensitive with aliases, and
+;; every tag found is echoed so a mismatch is obvious on the command line.
+(defun MTAP:fill-template (blk / e ed tag val)
+  (if blk
+    (progn
+      (setq e (entnext blk))
+      (while (and e (/= (cdr (assoc 0 (entget e))) "SEQEND"))
+        (setq ed (entget e))
+        (if (= (cdr (assoc 0 ed)) "ATTRIB")
+          (progn
+            (setq tag (strcase (cdr (assoc 2 ed)))
+                  val (cond
+                        ((member tag '("CUSTOMER" "CLIENT" "COMPANY")) MTAP:CUSTOMER)
+                        ((member tag '("DRAWNBY" "DRAWN BY" "DRAWN_BY" "DRAWN" "DRWN" "BY")) MTAP:DRAWNBY)
+                        ((member tag '("CHECKEDBY" "CHECKED BY" "CHECKED_BY" "CHECKED" "CHKBY" "CHK")) MTAP:CHECKEDBY)
+                        ((member tag '("TITLE" "PARTNAME" "PART" "PART NAME" "NAME")) MTAP:TITLE)
+                        ((member tag '("DATE")) MTAP:DATE)
+                        ((member tag '("DESC" "DESCRIPTION" "REMARKS" "REMARK" "NOTES" "NOTE")) MTAP:DESC)
+                        (T nil)))
+            (princ (strcat "\n  attrib " tag
+                           (if val (strcat " <= \"" val "\"") "  (no match — left as-is)")))
+            (if val
+              (progn
+                (entmod (subst (cons 1 val) (assoc 1 ed) ed))
+                (setq ed (entget e))           ; re-read after value change
+                (if (assoc 62 ed)
+                  (entmod (subst '(62 . 2) (assoc 62 ed) ed))
+                  (entmod (append ed '((62 . 2)))))
+                (entupd e)))))
+        (setq e (entnext e)))))
+  (princ))
+
 ;; main draw
 (defun MTAP:draw ( / osm cme res blk)
   (setq osm (getvar "OSMODE") cme (getvar "CMDECHO"))
@@ -166,7 +269,7 @@ _LIBRARY = r"""
         (MTAP:setvars)
 
         ;; version + scale banner — confirms you're running the latest link file
-        (princ (strcat "\n=== MTAP build R8 ==="
+        (princ (strcat "\n=== MTAP build R9 ==="
                        "\n  block scales:  BT=" (rtos MTAP:SCALE_BT 2 2)
                        "  GDT=" (rtos MTAP:SCALE_GDT 2 2)
                        "  DAT=" (rtos MTAP:SCALE_DAT 2 2)
@@ -176,6 +279,11 @@ _LIBRARY = r"""
         (MTAP:load-block "MTAP_BACKTAPER" MTAP:PATH_BACKTAPER)
         (MTAP:load-block "MTAP_GDT"       MTAP:PATH_GDT)
         (MTAP:load-block "MTAP_DATUM"     MTAP:PATH_DATUM)
+        (MTAP:load-block "MTAP_TEMPLATE"  MTAP:PATH_TEMPLATE)
+
+        ;; mark the start of the tool drawing so we can measure its bounding box
+        ;; later (everything created after here = the drawing to center)
+        (setq MTAP:TOOLSTART (entlast))
 
         ;; outline
         (setvar "CLAYER" "MTAP-OUTLINE")
@@ -246,6 +354,11 @@ _LIBRARY = r"""
         (setvar "CLAYER" "MTAP-ANNOT")
         (command "_.TEXT" "_Justify" "_Middle"
                  MTAP:NOTEPT (* MTAP:TXT 0.9) 0 MTAP:NOTE)
+
+        ;; ---- customer template: border + title block, scaled to wrap the
+        ;; drawing and positioned so the tool is centered in the window ----
+        (setq blk (MTAP:place-template (MTAP:range-bbox MTAP:TOOLSTART)))
+        (MTAP:fill-template blk)
 
         (command "_.ZOOM" "_Extents")
         "ok"))))
@@ -361,6 +474,7 @@ class LspWriter:
         a(f'(setq MTAP:PATH_BACKTAPER "{bd}/MTAP_BACKTAPER.dwg")')
         a(f'(setq MTAP:PATH_GDT       "{bd}/MTAP_GDT.dwg")')
         a(f'(setq MTAP:PATH_DATUM      "{bd}/MTAP_DATUM.dwg")')
+        a(f'(setq MTAP:PATH_TEMPLATE   "{bd}/MTAP_TEMPLATE.dwg")')
         a("")
 
         # title-block / template metadata (fills the customer template later)
@@ -373,7 +487,7 @@ class LspWriter:
         a(f"(setq MTAP:DRAWNBY   {_lstr(m.get('drawn_by', ''))})")
         a(f"(setq MTAP:CHECKEDBY {_lstr(m.get('checked_by', ''))})")
         a(f"(setq MTAP:DESC      {_lstr(m.get('description', ''))})")
-        a(f"(setq MTAP:TITLE     {_lstr(m.get('title', title))})")
+        a(f"(setq MTAP:TITLE     {_lstr(m.get('title') or title)})")
         a(f"(setq MTAP:DATE      {_lstr(m.get('date', ''))})")
         a("")
 
