@@ -187,13 +187,36 @@ _LIBRARY = r"""
     (setq e (entnext e)))
   (if (and mn mx) (list mn mx) nil))
 
+;; Fallback: overall extents of the whole block DEFINITION (any layer), unioning
+;; every sub-entity vertex (group 10/11).  Used when MTAP_WINDOW isn't found so
+;; the template is still inserted and roughly centered instead of vanishing.
+(defun MTAP:block-extents (bname / e ed mn mx)
+  (setq e (cdr (assoc -2 (tblsearch "BLOCK" bname))))
+  (while e
+    (setq ed (entget e))
+    (foreach pr ed
+      (if (or (= 10 (car pr)) (= 11 (car pr)))
+        (progn
+          (if mn (setq mn (list (min (car mn) (cadr pr)) (min (cadr mn) (caddr pr))))
+                 (setq mn (list (cadr pr) (caddr pr))))
+          (if mx (setq mx (list (max (car mx) (cadr pr)) (max (cadr mx) (caddr pr))))
+                 (setq mx (list (cadr pr) (caddr pr)))))))
+    (setq e (entnext e)))
+  (if (and mn mx) (list mn mx) nil))
+
 ;; Insert MTAP_TEMPLATE scaled so its MTAP_WINDOW wraps the tool bbox with a
 ;; little margin, positioned so the WINDOW CENTER lands on the TOOL CENTER —
 ;; i.e. the drawing is centered in the rectangle both horizontally & vertically.
 ;; The TOOL stays true 1:1; only the TEMPLATE scales.  Returns the INSERT ename.
+;; If MTAP_WINDOW isn't found we fall back to the block's overall extents so the
+;; border is ALWAYS drawn (never silently skipped).
 (defun MTAP:place-template (bb / wn tmn tmx tcx tcy tw th
-                                  wmn wmx wcx wcy ww wh s ipx ipy margin)
-  (setq wn (MTAP:block-window "MTAP_TEMPLATE"))
+                                  wmn wmx wcx wcy ww wh s ipx ipy margin usedwin)
+  (setq wn (MTAP:block-window "MTAP_TEMPLATE") usedwin T)
+  (if (null wn)
+    (progn
+      (princ "\n*** MTAP: MTAP_WINDOW layer not found — using full template extents.")
+      (setq wn (MTAP:block-extents "MTAP_TEMPLATE") usedwin nil)))
   (if (and bb wn)
     (progn
       (setq tmn (car bb)  tmx (cadr bb)
@@ -210,13 +233,14 @@ _LIBRARY = r"""
       ;; window-center(world) = IP + s*window-center(local)  =>  solve for IP
       (setq ipx (- tcx (* s wcx))
             ipy (- tcy (* s wcy)))
-      (princ (strcat "\n  template scale=" (rtos s 2 3)
-                     "  window=" (rtos ww 2 1) "x" (rtos wh 2 1)
+      (princ (strcat "\n  template " (if usedwin "(window)" "(full-extents)")
+                     " scale=" (rtos s 2 3)
+                     "  box=" (rtos ww 2 1) "x" (rtos wh 2 1)
                      "  tool=" (rtos tw 2 1) "x" (rtos th 2 1)))
       (setvar "CLAYER" "0")
       (MTAP:ins-block "MTAP_TEMPLATE" (list ipx ipy) s))
     (progn
-      (princ "\n*** MTAP: MTAP_WINDOW not found in template; border skipped.")
+      (princ "\n*** MTAP: template has no measurable geometry; border skipped.")
       nil)))
 
 ;; Fill the title-block attributes from the app's metadata and force the filled
