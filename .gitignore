@@ -1,0 +1,35 @@
+# ── Python ─────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ── PyInstaller build output (incl. the large exe) ─────
+build/
+dist/
+*.manifest
+
+# ── Logs & generated output ────────────────────────────
+logs/
+output/
+build_log.txt
+selftest_result.txt
+
+# ── Local mock / preview artifacts ─────────────────────
+*_preview.png
+mock_color.png
+mock_mono.png
+
+# ── AutoCAD backups ────────────────────────────────────
+*.bak
+*.dwl
+*.dwl2
+
+# ── Editor / tooling / OS ──────────────────────────────
+.claude/
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

@@ -1,0 +1,102 @@
+import sys
+import os
+
+from PyQt6.QtWidgets import QApplication
+from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QFont
+from PyQt6.QtCore import Qt
+
+from app.ui.main_window import MainWindow
+from app.utils.config import APP_NAME, APP_VERSION, resource_path
+from app.utils.logging_setup import setup_logging, get_logger, log_dir
+
+
+def _create_icon() -> QIcon:
+    """Programmatic icon: dark background, amber M."""
+    px = QPixmap(64, 64)
+    px.fill(QColor("#1a1a1a"))
+
+    painter = QPainter(px)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+    # Amber border
+    painter.setPen(QColor("#c8a800"))
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.drawRect(2, 2, 60, 60)
+
+    # "M" letter
+    painter.setPen(QColor("#c8a800"))
+    font = QFont("Segoe UI", 36, QFont.Weight.Bold)
+    painter.setFont(font)
+    painter.drawText(px.rect(), Qt.AlignmentFlag.AlignCenter, "M")
+
+    painter.end()
+    return QIcon(px)
+
+
+def run_selftest() -> None:
+    """
+    Headless check of the deliverable pipeline (AutoCAD link). Confirms the
+    FROZEN exe can extract the embedded blocks and write the DMTAP link file
+    without the GUI. Results go to logs/selftest_result.txt and logs/mtap.log.
+    Run with:  MTAP.exe --selftest
+    """
+    setup_logging()
+    log = get_logger()
+    from app.engine.tools.drill import DrillBlankParams
+    from app.dxf.lsp_writer import LspWriter
+    from app.utils.config import AUTOCAD_LINK_PATH
+
+    lines = [f"link path: {AUTOCAD_LINK_PATH}"]
+
+    p = DrillBlankParams(cutting_diameter=8, shank_diameter=12, overall_length=120,
+                         shank_length=45, point_angle=140, reinforcement=True,
+                         reinforcement_angle=30)
+    p.derive()
+    lines.append(f"validate: {p.validate() or 'OK'}")
+
+    meta = {"customer": "SELFTEST", "drawn_by": "MTAP", "checked_by": "",
+            "description": "self-test drawing"}
+    try:
+        LspWriter(p, meta).generate(AUTOCAD_LINK_PATH)
+        size = os.path.getsize(AUTOCAD_LINK_PATH) if os.path.exists(AUTOCAD_LINK_PATH) else 0
+        lines.append(f"LINK: {'OK' if size > 0 else 'EMPTY FILE'} size={size}")
+    except Exception as e:
+        log.exception("selftest LINK failed")
+        lines.append(f"LINK: FAIL {type(e).__name__}: {e}")
+
+    text = "\n".join(lines)
+    log.info("SELFTEST RESULT:\n%s", text)
+    with open(os.path.join(log_dir(), "selftest_result.txt"), "w", encoding="utf-8") as fh:
+        fh.write(text + "\n")
+
+
+def main() -> None:
+    if "--selftest" in sys.argv:
+        run_selftest()
+        return
+
+    log_path = setup_logging()
+    log = get_logger()
+
+    app = QApplication(sys.argv)
+    app.setApplicationName(APP_NAME)
+    app.setApplicationVersion(APP_VERSION)
+    app.setOrganizationName("MTAP")
+    log.info("QApplication created; log file: %s", log_path)
+
+    # Apply the saved theme (dark/light); injects arrow-icon paths internally.
+    from app.ui import theme
+    theme.apply_theme(theme.load_saved())
+
+    # Prefer the packaged .ico if present, else fall back to the drawn icon.
+    ico_path = resource_path(os.path.join("assets", "icons", "mtap.ico"))
+    app.setWindowIcon(QIcon(ico_path) if os.path.exists(ico_path) else _create_icon())
+
+    window = MainWindow()
+    window.showMaximized()
+
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()
