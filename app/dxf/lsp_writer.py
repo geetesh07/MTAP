@@ -300,7 +300,7 @@ _LIBRARY = r"""
         (MTAP:setvars)
 
         ;; version + scale banner — confirms you're running the latest link file
-        (princ (strcat "\n=== MTAP build R13 ==="
+        (princ (strcat "\n=== MTAP build R14 ==="
                        "\n  block scales:  BT=" (rtos MTAP:SCALE_BT 2 2)
                        "  GDT=" (rtos MTAP:SCALE_GDT 2 2)
                        "  DAT=" (rtos MTAP:SCALE_DAT 2 2)
@@ -467,7 +467,7 @@ class LspWriter:
         p            = params
         self.feature = max(p.overall_length, p.cutting_diameter * 4.0,
                            p.shank_diameter * 4.0, 1.0)
-        self.txt     = self.feature * 0.022
+        self.txt     = self.feature * 0.0154  # 0.022 * 0.70 = 30% reduction
         self.gap     = self.feature * 0.055
 
     def generate(self, link_path: str) -> None:
