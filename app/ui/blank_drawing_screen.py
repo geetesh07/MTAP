@@ -43,33 +43,37 @@ class BlankDrawingScreen(QWidget):
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
-        # Centered, max-width column so fields don't stretch across a wide window
+        # Full-width two-column layout of section cards
         form = QWidget()
-        outer = QHBoxLayout(form)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.addStretch(1)
-
-        column = QWidget()
-        column.setMaximumWidth(780)
-        f = QVBoxLayout(column)
-        f.setContentsMargins(32, 28, 32, 24)
-        f.setSpacing(18)
+        page = QVBoxLayout(form)
+        page.setContentsMargins(48, 26, 48, 26)
+        page.setSpacing(18)
 
         header = QLabel("PARAMETERS")
         header.setObjectName("SectionHeader")
-        f.addWidget(header)
+        page.addWidget(header)
 
-        f.addWidget(self._group_tool())
-        f.addWidget(self._group_dimensions())
-        f.addWidget(self._group_geometry())
-        f.addWidget(self._group_annotations())
-        f.addWidget(self._group_flute())
-        f.addWidget(self._group_details())
-        f.addWidget(self._group_derived())
-        f.addStretch()
+        cols = QHBoxLayout()
+        cols.setSpacing(32)
 
-        outer.addWidget(column, stretch=0)
-        outer.addStretch(1)
+        left = QVBoxLayout(); left.setSpacing(20)
+        right = QVBoxLayout(); right.setSpacing(20)
+
+        left.addWidget(self._group_tool())
+        left.addWidget(self._group_dimensions())
+        left.addWidget(self._group_geometry())
+        left.addWidget(self._group_flute())
+        left.addStretch()
+
+        right.addWidget(self._group_annotations())
+        right.addWidget(self._group_details())
+        right.addWidget(self._group_derived())
+        right.addStretch()
+
+        cols.addLayout(left, 1)
+        cols.addLayout(right, 1)
+        page.addLayout(cols)
+        page.addStretch()
 
         scroll.setWidget(form)
         root.addWidget(scroll, stretch=1)

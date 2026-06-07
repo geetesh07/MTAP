@@ -19,12 +19,14 @@ def current_theme() -> str:
 
 
 def load_saved() -> str:
-    name = QSettings("NTS", "MTAP").value("theme", "light")
+    # New settings key ("appearance") so the old saved "theme" value doesn't
+    # pin existing users to the legacy dark look — everyone starts on light.
+    name = QSettings("NTS", "MTAP").value("appearance", "light")
     return name if name in _QSS_FILES else "light"
 
 
 def _save(name: str) -> None:
-    QSettings("NTS", "MTAP").setValue("theme", name)
+    QSettings("NTS", "MTAP").setValue("appearance", name)
 
 
 def apply_theme(name: str) -> str:
