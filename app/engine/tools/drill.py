@@ -52,6 +52,10 @@ class DrillBlankParams(BaseTool):
     # 0 = suppress the GD&T block.
     runout: float = 0.010
 
+    # Through-coolant: draw two helical coolant holes (shown as mirrored dotted
+    # sine curves down the axis). False = solid (no coolant) blank.
+    coolant: bool = False
+
     # --- Derived (computed in derive()) ---
     point_length: float = field(default=0.0, init=False)          # axial height of point cone
     reinforcement_length: float = field(default=0.0, init=False)  # axial length of transition cone

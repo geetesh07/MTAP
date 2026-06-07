@@ -179,6 +179,9 @@ class BlankDrawingScreen(QWidget):
         self.reinf_angle_label.setVisible(False)
         self.reinf_angle_spin.setVisible(False)
         self.reinf_angle_unit.setVisible(False)
+
+        self.coolant_toggle = YesNoToggle(value=False)
+        self._row(grid, 3, "Through coolant", self.coolant_toggle)
         return box
 
     def _group_annotations(self) -> QGroupBox:
@@ -306,6 +309,7 @@ class BlankDrawingScreen(QWidget):
             flute_length_override=flute_override,
             back_taper=self.back_taper_spin.value(),
             runout=self.runout_spin.value(),
+            coolant=self.coolant_toggle.value(),
         )
 
     def _collect_meta(self) -> dict:

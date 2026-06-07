@@ -312,15 +312,16 @@ _LIBRARY = r"""
     (vl-catch-all-apply
       (function (lambda ()
 
-        ;; layers  (2=yellow  4=cyan  1=red)
+        ;; layers  (2=yellow  4=cyan  1=red  3=green)
         (MTAP:make-layer "MTAP-OUTLINE" 2 "Continuous")
         (MTAP:make-layer "MTAP-CENTER"  4 "CENTER")
         (MTAP:make-layer "MTAP-DIM"     1 "Continuous")
         (MTAP:make-layer "MTAP-ANNOT"   2 "Continuous")
+        (MTAP:make-layer "MTAP-COOLANT" 3 "DOT")
         (MTAP:setvars)
 
         ;; version + scale banner — confirms you're running the latest link file
-        (princ (strcat "\n=== MTAP build R21 ==="
+        (princ (strcat "\n=== MTAP build R22 ==="
                        "\n  block scales:  BT=" (rtos MTAP:SCALE_BT 2 2)
                        "  GDT=" (rtos MTAP:SCALE_GDT 2 2)
                        "  DAT=" (rtos MTAP:SCALE_DAT 2 2)
@@ -356,6 +357,19 @@ _LIBRARY = r"""
         (setvar "CLAYER" "MTAP-CENTER")
         (command "_.LINE" MTAP:CL1 MTAP:CL2 "")
         (MTAP:set-center)
+
+        ;; through-coolant holes — two helical holes projected as mirrored sine
+        ;; curves, drawn dotted.  PLINEGEN keeps the dot pattern continuous across
+        ;; the many vertices so it reads as one flowing dotted curve.
+        (if MTAP:HASCOOLANT
+          (progn
+            (setvar "CLAYER" "MTAP-COOLANT")
+            (setvar "CELTSCALE" MTAP:LTSCALE)
+            (setvar "PLINEGEN" 1)
+            (apply 'command (append '("_.PLINE") MTAP:COOLANT1 '("")))
+            (apply 'command (append '("_.PLINE") MTAP:COOLANT2 '("")))
+            (setvar "PLINEGEN" 0)
+            (setvar "CELTSCALE" 1.0)))
 
         ;; diameter dims
         (setvar "CLAYER" "MTAP-DIM")
@@ -610,6 +624,32 @@ class LspWriter:
         # into the diameter dimensions / point-angle annotation
         a(f"(setq MTAP:CL1 {_pt(-(txt * 0.8), 0.0)})")
         a(f"(setq MTAP:CL2 {_pt(p.overall_length + txt * 1.2, 0.0)})")
+        a("")
+
+        # through-coolant holes — a helical hole projects to a sine wave in side
+        # view; two holes 180 deg apart => two curves mirrored about the axis.
+        # Drawn dotted (see MTAP-COOLANT layer).  Runs from the body start to the
+        # back face, amplitude held inside the material.
+        a(f"(setq MTAP:HASCOOLANT {_bool(p.coolant)})")
+        if p.coolant:
+            amp  = min(rc, rs) * 0.5
+            cx0  = p.x_point_base
+            cx1  = p.x_end
+            span = max(cx1 - cx0, EPS)
+            waves = max(1.0, min(span / (p.cutting_diameter * 8.0), 4.0))
+            wl    = span / waves
+            nseg  = 48
+            wave_pts = []
+            for i in range(nseg + 1):
+                x = cx0 + span * i / nseg
+                y = amp * math.sin(2.0 * math.pi * (x - cx0) / wl)
+                wave_pts.append((x, y))
+            s1 = " ".join(_pt(x, y) for x, y in wave_pts)
+            s2 = " ".join(_pt(x, -y) for x, y in wave_pts)   # mirror about centerline
+            a(f"(setq MTAP:COOLANT1 (list {s1}))")
+            a(f"(setq MTAP:COOLANT2 (list {s2}))")
+        else:
+            a("(setq MTAP:COOLANT1 nil MTAP:COOLANT2 nil)")
         a("")
 
         # point angle
