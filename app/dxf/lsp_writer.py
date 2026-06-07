@@ -293,7 +293,7 @@ _LIBRARY = r"""
         (MTAP:setvars)
 
         ;; version + scale banner — confirms you're running the latest link file
-        (princ (strcat "\n=== MTAP build R10 ==="
+        (princ (strcat "\n=== MTAP build R11 ==="
                        "\n  block scales:  BT=" (rtos MTAP:SCALE_BT 2 2)
                        "  GDT=" (rtos MTAP:SCALE_GDT 2 2)
                        "  DAT=" (rtos MTAP:SCALE_DAT 2 2)
@@ -321,6 +321,9 @@ _LIBRARY = r"""
         ;; reinforcement cone exists; otherwise a single junction line)
         (if MTAP:HASTR1 (command "_.LINE" MTAP:TR1A MTAP:TR1B ""))
         (if MTAP:HASTR2 (command "_.LINE" MTAP:TR2A MTAP:TR2B ""))
+
+        ;; back-face chamfer root line (full shank diameter at the chamfer start)
+        (if MTAP:HASBFLINE (command "_.LINE" MTAP:BF1 MTAP:BF2 ""))
 
         ;; centerline
         (setvar "CLAYER" "MTAP-CENTER")
@@ -537,6 +540,18 @@ class LspWriter:
         prof    = _chamfer_backface(p.profile_points(), p.x_end, rs, chamfer)
         pts     = " ".join(_pt(x, y) for x, y in prof)
         a(f"(setq MTAP:PROFILE (list {pts}))")
+        a("")
+
+        # back-face chamfer "root" line — a straight vertical line at the chamfer
+        # start (full shank diameter), connecting the top & bottom chamfer corners
+        # so the back-face edge reads clearly, like the other transition lines.
+        has_bf = chamfer > EPS
+        a(f"(setq MTAP:HASBFLINE {_bool(has_bf)})")
+        if has_bf:
+            a(f"(setq MTAP:BF1 {_pt(p.x_end - chamfer,  rs)})")
+            a(f"(setq MTAP:BF2 {_pt(p.x_end - chamfer, -rs)})")
+        else:
+            a("(setq MTAP:BF1 nil MTAP:BF2 nil)")
         a("")
 
         # centerline — trimmed to a small nub past each end so it doesn't run

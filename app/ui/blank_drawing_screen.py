@@ -314,7 +314,7 @@ class BlankDrawingScreen(QWidget):
             "drawn_by": self.drawn_edit.text().strip(),
             "checked_by": self.checked_edit.text().strip(),
             "description": self.desc_edit.toPlainText().strip(),
-            "date": date.today().isoformat(),
+            "date": date.today().strftime("%d/%m/%y"),
         }
 
     def _on_input_change(self) -> None:
