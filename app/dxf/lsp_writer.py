@@ -204,21 +204,6 @@ _LIBRARY = r"""
     (setq e (entnext e)))
   (if (and mn mx) (list mn mx) nil))
 
-;; World BOTTOM-RIGHT corner (xmax, ymin) of an ALREADY-INSERTED entity, measured
-;; from its real bounding box in the drawing.  Independent of the block's base
-;; point or its definition — whatever you see on screen is what gets measured.
-;; Returns nil on failure.
-(defun MTAP:inst-br (e / lo hi)
-  (if (and e (not (vl-catch-all-error-p
-                    (vl-catch-all-apply
-                      (function (lambda ()
-                        (vla-getboundingbox (vlax-ename->vla-object e) 'lo 'hi)))))))
-    (progn
-      (setq lo (vlax-safearray->list lo)
-            hi (vlax-safearray->list hi))
-      (list (car hi) (cadr lo)))   ; (max_x, min_y) = bottom-right
-    nil))
-
 ;; Insert MTAP_TEMPLATE scaled so its MTAP_WINDOW wraps the tool bbox with a
 ;; little margin, positioned so the WINDOW CENTER lands on the TOOL CENTER —
 ;; i.e. the drawing is centered in the rectangle both horizontally & vertically.
@@ -304,7 +289,7 @@ _LIBRARY = r"""
   (princ))
 
 ;; main draw
-(defun MTAP:draw ( / osm cme res blk btbr tb twh tth ttx tty)
+(defun MTAP:draw ( / osm cme res blk tb twh tth ttx tty)
   (setq osm (getvar "OSMODE") cme (getvar "CMDECHO"))
   (setvar "OSMODE" 0) (setvar "CMDECHO" 0)
 
@@ -328,7 +313,7 @@ _LIBRARY = r"""
         (MTAP:setvars)
 
         ;; version + scale banner — confirms you're running the latest link file
-        (princ (strcat "\n=== MTAP build R25 ==="
+        (princ (strcat "\n=== MTAP build R26 ==="
                        "\n  block scales:  BT=" (rtos MTAP:SCALE_BT 2 2)
                        "  GDT=" (rtos MTAP:SCALE_GDT 2 2)
                        "  DAT=" (rtos MTAP:SCALE_DAT 2 2)
@@ -415,25 +400,23 @@ _LIBRARY = r"""
             (command "_.LINE" MTAP:GDT_LDR1 MTAP:GDT_LDR2 "")
             (MTAP:ins-block "MTAP_DATUM" MTAP:DATINS MTAP:SCALE_DAT)))
 
-        ;; back taper — insert the block first, then measure its REAL bounding box
-        ;; and run the Q-leader (red, real arrow) from the flute start to the
-        ;; block's BOTTOM-RIGHT corner.  Measuring the inserted instance means the
-        ;; corner is correct regardless of the block's base point.
+        ;; back taper — Q-leader (red, real arrow) from the flute start to
+        ;; MTAP:BTINS, the block's INSERTION point.  The block is inserted at this
+        ;; same point, so the leader lands exactly on the block's base point — set
+        ;; the back-taper block's base point to whatever corner you want the leader
+        ;; to touch (you've set it to the bottom-right corner).  This uses the
+        ;; base point directly, so it ignores any stray geometry in the block and
+        ;; can never wander to the datum.
         (if MTAP:HASBT
           (progn
+            (setvar "CLAYER" "MTAP-DIM")   ; red leader (draw first, block over it)
+            (setvar "DIMASZ" MTAP:TXT)
+            (vl-catch-all-apply
+              (function (lambda ()
+                (command "_.LEADER" MTAP:BT_ARROW MTAP:BTINS "" "" "_None"))))
             (setvar "CLAYER" "MTAP-ANNOT")
             (setq blk (MTAP:ins-block "MTAP_BACKTAPER" MTAP:BTINS MTAP:SCALE_BT))
-            (MTAP:set-attrib blk "VAL" MTAP:BTVAL)
-            (setq btbr (MTAP:inst-br blk))
-            (princ (strcat "\n  back-taper block bottom-right = "
-                           (if btbr (strcat "(" (rtos (car btbr) 2 2) ", "
-                                            (rtos (cadr btbr) 2 2) ")") "nil")))
-            (setvar "CLAYER" "MTAP-DIM")   ; red leader
-            (setvar "DIMASZ" MTAP:TXT)
-            (if btbr
-              (vl-catch-all-apply
-                (function (lambda ()
-                  (command "_.LEADER" MTAP:BT_ARROW btbr "" "" "_None")))))))
+            (MTAP:set-attrib blk "VAL" MTAP:BTVAL)))
 
         ;; ---- customer template: border + title block, scaled to wrap the
         ;; drawing and positioned so the tool is centered in the window ----
