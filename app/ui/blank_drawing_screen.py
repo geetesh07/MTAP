@@ -43,10 +43,17 @@ class BlankDrawingScreen(QWidget):
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
+        # Centered, max-width column so fields don't stretch across a wide window
         form = QWidget()
-        f = QVBoxLayout(form)
-        f.setContentsMargins(28, 26, 28, 22)
-        f.setSpacing(16)
+        outer = QHBoxLayout(form)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addStretch(1)
+
+        column = QWidget()
+        column.setMaximumWidth(780)
+        f = QVBoxLayout(column)
+        f.setContentsMargins(32, 28, 32, 24)
+        f.setSpacing(18)
 
         header = QLabel("PARAMETERS")
         header.setObjectName("SectionHeader")
@@ -60,6 +67,9 @@ class BlankDrawingScreen(QWidget):
         f.addWidget(self._group_details())
         f.addWidget(self._group_derived())
         f.addStretch()
+
+        outer.addWidget(column, stretch=0)
+        outer.addStretch(1)
 
         scroll.setWidget(form)
         root.addWidget(scroll, stretch=1)
