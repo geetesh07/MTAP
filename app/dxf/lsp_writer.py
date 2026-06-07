@@ -317,11 +317,18 @@ _LIBRARY = r"""
         (MTAP:make-layer "MTAP-CENTER"  4 "CENTER")
         (MTAP:make-layer "MTAP-DIM"     1 "Continuous")
         (MTAP:make-layer "MTAP-ANNOT"   2 "Continuous")
-        (MTAP:make-layer "MTAP-COOLANT" 3 "DOT")
+        (MTAP:make-layer "MTAP-COOLANT" 6 "DOT")
+        ;; force a true PINK on the coolant layer (falls back to ACI 6 if it fails)
+        (vl-catch-all-apply
+          (function (lambda ( / e ed)
+            (setq e  (tblobjname "LAYER" "MTAP-COOLANT")
+                  ed (vl-remove-if (function (lambda (x) (= (car x) 420)))
+                                   (entget e)))
+            (entmod (append ed (list (cons 420 16738740)))))))   ; RGB 255,105,180
         (MTAP:setvars)
 
         ;; version + scale banner — confirms you're running the latest link file
-        (princ (strcat "\n=== MTAP build R23 ==="
+        (princ (strcat "\n=== MTAP build R24 ==="
                        "\n  block scales:  BT=" (rtos MTAP:SCALE_BT 2 2)
                        "  GDT=" (rtos MTAP:SCALE_GDT 2 2)
                        "  DAT=" (rtos MTAP:SCALE_DAT 2 2)
@@ -636,7 +643,7 @@ class LspWriter:
             # coolant enters at the back face and runs toward the tip, but STOPS
             # after dipping 20% into the flute (from the flute's shank-side end at
             # x_point_base + flute_length) — it must not reach the tip.
-            cx0  = p.x_point_base + 0.80 * p.flute_length   # 20% into the flute
+            cx0  = p.x_point_base + 0.70 * p.flute_length   # 30% into the flute
             cx1  = p.x_end                                  # back face (entry)
             span = max(cx1 - cx0, EPS)
             waves = max(1.0, min(span / (p.cutting_diameter * 8.0), 4.0))
