@@ -302,18 +302,11 @@ _LIBRARY = r"""
         (MTAP:make-layer "MTAP-CENTER"  4 "CENTER")
         (MTAP:make-layer "MTAP-DIM"     1 "Continuous")
         (MTAP:make-layer "MTAP-ANNOT"   2 "Continuous")
-        (MTAP:make-layer "MTAP-COOLANT" 6 "HIDDEN2")
-        ;; force a true PINK on the coolant layer (falls back to ACI 6 if it fails)
-        (vl-catch-all-apply
-          (function (lambda ( / e ed)
-            (setq e  (tblobjname "LAYER" "MTAP-COOLANT")
-                  ed (vl-remove-if (function (lambda (x) (= (car x) 420)))
-                                   (entget e)))
-            (entmod (append ed (list (cons 420 16738740)))))))   ; RGB 255,105,180
+        (MTAP:make-layer "MTAP-COOLANT" 6 "HIDDEN2")   ; 6 = magenta/pink
         (MTAP:setvars)
 
         ;; version + scale banner — confirms you're running the latest link file
-        (princ (strcat "\n=== MTAP build R26 ==="
+        (princ (strcat "\n=== MTAP build R27 ==="
                        "\n  block scales:  BT=" (rtos MTAP:SCALE_BT 2 2)
                        "  GDT=" (rtos MTAP:SCALE_GDT 2 2)
                        "  DAT=" (rtos MTAP:SCALE_DAT 2 2)
