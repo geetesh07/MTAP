@@ -4,7 +4,7 @@ from datetime import date
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QFrame,
-    QPushButton, QComboBox, QDoubleSpinBox, QLineEdit, QPlainTextEdit,
+    QPushButton, QLineEdit, QPlainTextEdit,
     QScrollArea, QGroupBox, QSizePolicy, QMessageBox,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -12,7 +12,7 @@ from PyQt6.QtGui import QFont
 
 from app.engine.tools.drill import DrillBlankParams
 from app.dxf.lsp_writer import LspWriter
-from app.ui.widgets import YesNoToggle
+from app.ui.widgets import YesNoToggle, NoScrollDoubleSpinBox, NoScrollComboBox
 from app.utils.config import AUTOCAD_LINK_DIR, AUTOCAD_LINK_PATH
 from app.utils.logging_setup import get_logger
 
@@ -99,8 +99,8 @@ class BlankDrawingScreen(QWidget):
         return bar
 
     # ----------------------------------------------------------------- widgets
-    def _spin(self, value, lo, hi, decimals=3, step=1.0) -> QDoubleSpinBox:
-        sb = QDoubleSpinBox()
+    def _spin(self, value, lo, hi, decimals=3, step=1.0) -> NoScrollDoubleSpinBox:
+        sb = NoScrollDoubleSpinBox()
         sb.setRange(lo, hi)
         sb.setDecimals(decimals)
         sb.setSingleStep(step)
@@ -126,7 +126,7 @@ class BlankDrawingScreen(QWidget):
         grid.setHorizontalSpacing(10)
         grid.setVerticalSpacing(10)
 
-        self.tool_combo = QComboBox()
+        self.tool_combo = NoScrollComboBox()
         self.tool_combo.addItem("Drill")
         self.tool_combo.addItem("End Mill (soon)")
         self.tool_combo.addItem("Reamer (soon)")

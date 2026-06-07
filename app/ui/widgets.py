@@ -1,6 +1,42 @@
 """Reusable custom widgets for the MTAP UI."""
-from PyQt6.QtWidgets import QWidget, QHBoxLayout, QPushButton, QButtonGroup
+from PyQt6.QtWidgets import (
+    QWidget, QHBoxLayout, QPushButton, QButtonGroup, QDoubleSpinBox, QComboBox,
+)
 from PyQt6.QtCore import Qt, pyqtSignal
+
+
+class NoScrollDoubleSpinBox(QDoubleSpinBox):
+    """A spin box that ignores the mouse wheel unless it is focused.
+
+    Stops the maddening behaviour where scrolling the form silently changes
+    whatever number happens to be under the cursor.  StrongFocus means it only
+    takes focus on click/Tab, so a passing wheel event falls through to the
+    scroll area instead of editing the value.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def wheelEvent(self, event):
+        if self.hasFocus():
+            super().wheelEvent(event)
+        else:
+            event.ignore()
+
+
+class NoScrollComboBox(QComboBox):
+    """A combo box that ignores the mouse wheel unless it is focused."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def wheelEvent(self, event):
+        if self.hasFocus():
+            super().wheelEvent(event)
+        else:
+            event.ignore()
 
 
 class YesNoToggle(QWidget):

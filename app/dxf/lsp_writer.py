@@ -68,6 +68,21 @@ _LIBRARY = r"""
               (cons 6 (if (tblsearch "LTYPE" ltype) ltype "Continuous"))))))
   name)
 
+;; Our OWN text style, fixed-height = 0 (i.e. height is per-text, not locked).
+;; The customer template often imports a STANDARD style with a LOCKED height,
+;; which makes the TEXT command skip the height prompt and renders our title at
+;; the wrong size — using a style we control avoids that entirely.
+(defun MTAP:make-style ( / )
+  (if (not (tblsearch "STYLE" "MTAP"))
+    (vl-catch-all-apply
+      (function (lambda ()
+        (entmake (list '(0 . "STYLE") '(100 . "AcDbSymbolTableRecord")
+                       '(100 . "AcDbTextStyleTableRecord")
+                       (cons 2 "MTAP") '(70 . 0) '(40 . 0.0) '(41 . 1.0)
+                       '(50 . 0.0) '(71 . 0) '(42 . 2.5)
+                       (cons 3 "txt") (cons 4 "")))))))
+  "MTAP")
+
 ;; dim variable setup
 (defun MTAP:setvars ()
   (setvar "DIMTXT"  MTAP:TXT) (setvar "DIMASZ"  MTAP:TXT)
@@ -303,10 +318,11 @@ _LIBRARY = r"""
         (MTAP:make-layer "MTAP-DIM"     1 "Continuous")
         (MTAP:make-layer "MTAP-ANNOT"   2 "Continuous")
         (MTAP:make-layer "MTAP-COOLANT" 6 "HIDDEN2")   ; 6 = magenta/pink
+        (MTAP:make-style)
         (MTAP:setvars)
 
         ;; version + scale banner — confirms you're running the latest link file
-        (princ (strcat "\n=== MTAP build R27 ==="
+        (princ (strcat "\n=== MTAP build R28 ==="
                        "\n  block scales:  BT=" (rtos MTAP:SCALE_BT 2 2)
                        "  GDT=" (rtos MTAP:SCALE_GDT 2 2)
                        "  DAT=" (rtos MTAP:SCALE_DAT 2 2)
@@ -417,17 +433,25 @@ _LIBRARY = r"""
         (MTAP:fill-template blk)
 
         ;; drawing title (yellow) — only for a Blank-mode Drill blank.  Placed near
-        ;; the TOP EDGE of the sheet, horizontally centered, sized to the window.
-        (if (and MTAP:HASTITLE MTAP:WINWORLD)
+        ;; the TOP EDGE of the sheet, horizontally centered.  Built with entmake +
+        ;; our own MTAP text style so a template-imported fixed-height style can't
+        ;; shrink/blank it (that was making the title invisible).
+        (if MTAP:HASTITLE
           (progn
-            (setvar "CLAYER" "MTAP-ANNOT")
-            (setq tb  MTAP:WINWORLD
-                  twh (- (cadr (cadr tb)) (cadr (car tb)))   ; window height (world)
-                  tth (* twh 0.045)                          ; title height ~4.5% of window
-                  ttx (/ (+ (car (car tb)) (car (cadr tb))) 2.0)  ; window center X
-                  tty (- (cadr (cadr tb)) (* tth 1.4)))      ; just below the top edge
-            (command "_.TEXT" "_Justify" "_Middle"
-                     (list ttx tty) tth 0 MTAP:TITLETEXT)))
+            (setq tb (if MTAP:WINWORLD MTAP:WINWORLD (MTAP:range-bbox MTAP:TOOLSTART)))
+            (if tb
+              (progn
+                (setq twh (- (cadr (cadr tb)) (cadr (car tb)))      ; box height (world)
+                      tth (max (* twh 0.045) (* MTAP:TXT 2.5))      ; readable title height
+                      ttx (/ (+ (car (car tb)) (car (cadr tb))) 2.0)   ; center X
+                      tty (- (cadr (cadr tb)) (* tth 1.4)))         ; just below top edge
+                (MTAP:make-style)
+                (entmake (list '(0 . "TEXT")
+                               (cons 8 "MTAP-ANNOT") (cons 7 "MTAP")
+                               (cons 10 (list ttx tty 0.0))
+                               (cons 11 (list ttx tty 0.0))
+                               (cons 40 tth) (cons 1 MTAP:TITLETEXT)
+                               '(72 . 4) '(73 . 0)))))))   ; 72=4 Middle (centered)
 
         (command "_.ZOOM" "_Extents")
         "ok"))))
