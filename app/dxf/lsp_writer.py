@@ -313,7 +313,7 @@ _LIBRARY = r"""
         (MTAP:setvars)
 
         ;; version + scale banner — confirms you're running the latest link file
-        (princ (strcat "\n=== MTAP build R17 ==="
+        (princ (strcat "\n=== MTAP build R18 ==="
                        "\n  block scales:  BT=" (rtos MTAP:SCALE_BT 2 2)
                        "  GDT=" (rtos MTAP:SCALE_GDT 2 2)
                        "  DAT=" (rtos MTAP:SCALE_DAT 2 2)
@@ -388,7 +388,7 @@ _LIBRARY = r"""
             (MTAP:ins-block "MTAP_DATUM" MTAP:DATINS MTAP:SCALE_DAT)))
 
         ;; back taper — block on annot layer; Q-leader (red) with a real arrow,
-        ;; arrow at the flute start, tail at the block's bottom-left corner
+        ;; arrow at the flute start (shank-side body end), tail at block bottom-left
         (if MTAP:HASBT
           (progn
             (setvar "CLAYER" "MTAP-ANNOT")
@@ -741,9 +741,10 @@ class LspWriter:
             bt_y = rmax + gap * 1.5          # sit just above the body
             a(f"(setq MTAP:BTINS   {_pt(bt_x, bt_y)})")
             a(f'(setq MTAP:BTVAL   "{p.back_taper:.3f}")')
-            # Q-leader arrow point = START OF THE FLUTE (body start, on the Dc
-            # surface).  Tail attaches to the block's bottom-left corner (LISP).
-            a(f"(setq MTAP:BT_ARROW {_pt(p.x_point_base, rc)})")
+            # Q-leader arrow point = START OF THE FLUTE = the SHANK-SIDE end of the
+            # Dc body (x_body_end), on the Dc surface.  (The pointy tip is the flute
+            # END.)  Tail attaches to the block's bottom-left corner (LISP).
+            a(f"(setq MTAP:BT_ARROW {_pt(p.x_body_end, rc)})")
         else:
             a("(setq MTAP:BTINS nil MTAP:BTVAL nil MTAP:BT_ARROW nil)")
         a("")
