@@ -211,7 +211,7 @@ _LIBRARY = r"""
 ;; If MTAP_WINDOW isn't found we fall back to the block's overall extents so the
 ;; border is ALWAYS drawn (never silently skipped).
 (defun MTAP:place-template (bb / wn tmn tmx tcx tcy tw th
-                                  wmn wmx wcx wcy ww wh s ipx ipy margin usedwin)
+                                  wmn wmx wcx wcy ww wh s ipx ipy margin usedwin ins)
   (setq wn (MTAP:block-window "MTAP_TEMPLATE") usedwin T)
   (if (null wn)
     (progn
@@ -238,7 +238,14 @@ _LIBRARY = r"""
                      "  box=" (rtos ww 2 1) "x" (rtos wh 2 1)
                      "  tool=" (rtos tw 2 1) "x" (rtos th 2 1)))
       (setvar "CLAYER" "0")
-      (MTAP:ins-block "MTAP_TEMPLATE" (list ipx ipy) s))
+      (setq ins (MTAP:ins-block "MTAP_TEMPLATE" (list ipx ipy) s))
+      ;; the MTAP_WINDOW rectangle only MARKS the drawing area — it must never
+      ;; display or plot.  Turn its layer Off + No-plot (catch if absent).
+      (vl-catch-all-apply
+        (function (lambda ()
+          (command "_.-LAYER" "_Off" "MTAP_WINDOW"
+                              "_Plot" "_No" "MTAP_WINDOW" ""))))
+      ins)
     (progn
       (princ "\n*** MTAP: template has no measurable geometry; border skipped.")
       nil)))
@@ -293,7 +300,7 @@ _LIBRARY = r"""
         (MTAP:setvars)
 
         ;; version + scale banner — confirms you're running the latest link file
-        (princ (strcat "\n=== MTAP build R11 ==="
+        (princ (strcat "\n=== MTAP build R12 ==="
                        "\n  block scales:  BT=" (rtos MTAP:SCALE_BT 2 2)
                        "  GDT=" (rtos MTAP:SCALE_GDT 2 2)
                        "  DAT=" (rtos MTAP:SCALE_DAT 2 2)
