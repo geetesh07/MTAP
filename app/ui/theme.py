@@ -11,7 +11,7 @@ from app.utils.config import resource_path
 from app.ui.icons_gen import ensure_arrow_icons
 
 _QSS_FILES = {"dark": "styles_dark.qss", "light": "styles_light.qss"}
-_current = "dark"
+_current = "light"
 
 
 def current_theme() -> str:
@@ -19,8 +19,8 @@ def current_theme() -> str:
 
 
 def load_saved() -> str:
-    name = QSettings("NTS", "MTAP").value("theme", "dark")
-    return name if name in _QSS_FILES else "dark"
+    name = QSettings("NTS", "MTAP").value("theme", "light")
+    return name if name in _QSS_FILES else "light"
 
 
 def _save(name: str) -> None:

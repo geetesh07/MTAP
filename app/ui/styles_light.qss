@@ -1,18 +1,24 @@
 /* ================================================================
-   MTAP — Soft Light Theme (warm paper, industrial amber accent)
-   Note: the drawing preview canvas stays dark so the yellow/red/cyan
-   drawing colours remain visible.
+   MTAP by NTS — Warm Light (Claude-style)
+   Palette
+     bg        #F4F1EA  warm paper
+     surface   #FBFAF6  cards / sections
+     input     #FFFFFF
+     line      #E7E3D8  soft border
+     line-2    #D8D3C5
+     text      #2A2823  warm near-black
+     text-2    #6E6A5F  secondary
+     muted     #9C988A
+     accent    #C96442  terracotta / coral
+     accent-hi #B5573A
    ================================================================ */
 
-/* ---- Base ---- */
-QMainWindow {
-    background-color: #f5f3ee;
-}
+QMainWindow { background-color: #F4F1EA; }
 
 QWidget {
-    background-color: #f5f3ee;
-    color: #2b2a26;
-    font-family: "Segoe UI", "Arial", sans-serif;
+    background-color: #F4F1EA;
+    color: #2A2823;
+    font-family: "Segoe UI", "Inter", "Arial", sans-serif;
     font-size: 13px;
     border: none;
     outline: none;
@@ -20,559 +26,206 @@ QWidget {
 
 /* ---- Top bar ---- */
 #TopBar {
-    background-color: #ffffff;
-    border-bottom: 2px solid #c8a800;
+    background-color: #FBFAF6;
+    border-bottom: 1px solid #E7E3D8;
 }
-
 #AppLogo {
-    color: #b8890c;
-    font-size: 20px;
-    font-weight: bold;
-    letter-spacing: 3px;
-    background-color: transparent;
+    color: #2A2823; font-size: 19px; font-weight: 700;
+    letter-spacing: 1px; background-color: transparent;
 }
-
-#AppSubtitle {
-    color: #9a9487;
-    font-size: 11px;
-    letter-spacing: 1px;
-    background-color: transparent;
-}
-
-#AppVersion {
-    color: #8a857a;
-    font-size: 11px;
-    font-weight: bold;
-    background-color: transparent;
-}
-
-#MadeBy {
-    color: #b8890c;
-    font-size: 9px;
-    font-weight: bold;
-    letter-spacing: 2px;
-    background-color: transparent;
-}
-
-#LogoMark {
-    background-color: transparent;
-}
-
+#AppSubtitle { color: #9C988A; font-size: 10px; letter-spacing: 2px; background-color: transparent; }
+#AppVersion { color: #8d8779; font-size: 11px; font-weight: 600; background-color: transparent; }
+#MadeBy { color: #C96442; font-size: 9px; font-weight: 700; letter-spacing: 2px; background-color: transparent; }
 #ThemeToggle {
-    background-color: transparent;
-    color: #8a857a;
-    border: 1px solid #d5d0c5;
-    padding: 5px 12px;
-    font-size: 10px;
-    font-weight: bold;
-    letter-spacing: 2px;
+    background-color: #FFFFFF; color: #6E6A5F;
+    border: 1px solid #E7E3D8; border-radius: 8px;
+    padding: 6px 13px; font-size: 10px; font-weight: 700; letter-spacing: 2px;
 }
-
-#ThemeToggle:hover {
-    color: #b8890c;
-    border: 1px solid #c8a800;
-}
+#ThemeToggle:hover { color: #C96442; border-color: #C96442; }
+#LogoMark { background-color: transparent; }
 
 /* ---- Section header ---- */
-#SectionHeader {
-    color: #9a9487;
-    font-size: 10px;
-    letter-spacing: 4px;
-    font-weight: bold;
-    background-color: transparent;
-}
-
-#Divider {
-    background-color: #e0dcd2;
-    max-height: 1px;
-    min-height: 1px;
-}
+#SectionHeader { color: #9C988A; font-size: 10px; letter-spacing: 4px; font-weight: 700; background-color: transparent; }
+#Divider { background-color: #E7E3D8; max-height: 1px; min-height: 1px; }
 
 /* ---- Mode selector cards ---- */
 #ModeCard {
-    background-color: #ffffff;
-    border: 1px solid #e4e0d7;
-    border-left: 3px solid #e4e0d7;
+    background-color: #FBFAF6; border: 1px solid #E7E3D8; border-radius: 14px;
 }
-
-#ModeCard:hover {
-    background-color: #fbfaf7;
-    border: 1px solid #cfc9bc;
-    border-left: 3px solid #c8a800;
-}
-
-#CardTitle {
-    color: #2b2a26;
-    font-size: 14px;
-    font-weight: bold;
-    letter-spacing: 1px;
-    background-color: transparent;
-}
-
-#CardTitleDim {
-    color: #b7b1a4;
-    font-size: 14px;
-    font-weight: bold;
-    letter-spacing: 1px;
-    background-color: transparent;
-}
-
-#CardDesc {
-    color: #6f6a60;
-    font-size: 11px;
-    background-color: transparent;
-    line-height: 1.5;
-}
-
-#CardDescDim {
-    color: #b7b1a4;
-    font-size: 11px;
-    background-color: transparent;
-}
-
-#CardBadge {
-    background-color: #c8a800;
-    color: #1a1a1a;
-    font-size: 9px;
-    font-weight: bold;
-    padding: 2px 8px;
-    letter-spacing: 2px;
-}
-
-#CardBadgeDim {
-    background-color: transparent;
-    color: #b7b1a4;
-    font-size: 9px;
-    font-weight: bold;
-    padding: 2px 8px;
-    letter-spacing: 2px;
-    border: 1px solid #ddd8cc;
-}
-
-#CardArrow {
-    color: #b8890c;
-    font-size: 20px;
-    background-color: transparent;
-}
-
-#CardArrowDim {
-    color: #cfc9bc;
-    font-size: 20px;
-    background-color: transparent;
-}
+#ModeCard:hover { background-color: #FFFFFF; border: 1px solid #C96442; }
+#CardTitle { color: #2A2823; font-size: 15px; font-weight: 700; letter-spacing: 0.5px; background-color: transparent; }
+#CardTitleDim { color: #BCB7A8; font-size: 15px; font-weight: 700; letter-spacing: 0.5px; background-color: transparent; }
+#CardDesc { color: #6E6A5F; font-size: 11px; background-color: transparent; }
+#CardDescDim { color: #BCB7A8; font-size: 11px; background-color: transparent; }
+#CardBadge { background-color: #C96442; color: #FFFFFF; font-size: 9px; font-weight: 700; padding: 3px 9px; letter-spacing: 2px; border-radius: 9px; }
+#CardBadgeDim { background-color: transparent; color: #BCB7A8; font-size: 9px; font-weight: 700; padding: 3px 9px; letter-spacing: 2px; border: 1px solid #E7E3D8; border-radius: 9px; }
+#CardArrow { color: #C96442; font-size: 20px; background-color: transparent; }
+#CardArrowDim { color: #D8D3C5; font-size: 20px; background-color: transparent; }
 
 /* ---- Footer ---- */
-#FooterNote {
-    color: #b0a99c;
-    font-size: 10px;
-    letter-spacing: 1px;
-    background-color: transparent;
-}
+#FooterNote { color: #B0AB9C; font-size: 10px; letter-spacing: 1px; background-color: transparent; }
 
 /* ---- Screen / Panel ---- */
-#ScreenTitle {
-    color: #2b2a26;
-    font-size: 16px;
-    font-weight: bold;
-    letter-spacing: 2px;
-    background-color: transparent;
-}
-
-#ScreenSubtitle {
-    color: #9a9487;
-    font-size: 11px;
-    background-color: transparent;
-}
-
-#LeftPanel {
-    background-color: #f5f3ee;
-    border-right: 1px solid #e4e0d7;
-}
-
-#RightPanel {
-    background-color: #eceae3;
-}
-
-#PlaceholderBox {
-    background-color: #ffffff;
-    border: 1px dashed #ddd8cc;
-}
-
-#PlaceholderText {
-    color: #b7b1a4;
-    font-size: 13px;
-    background-color: transparent;
-}
-
-#PlaceholderSubText {
-    color: #cfc9bc;
-    font-size: 11px;
-    background-color: transparent;
-}
+#ScreenTitle { color: #2A2823; font-size: 16px; font-weight: 700; letter-spacing: 0.5px; background-color: transparent; }
+#ScreenSubtitle { color: #9C988A; font-size: 11px; background-color: transparent; }
+#LeftPanel { background-color: #F4F1EA; }
+#RightPanel { background-color: #EFEBE1; }
+#PlaceholderBox { background-color: #FBFAF6; border: 1px dashed #D8D3C5; border-radius: 12px; }
+#PlaceholderText { color: #9C988A; font-size: 13px; background-color: transparent; }
+#PlaceholderSubText { color: #BCB7A8; font-size: 11px; background-color: transparent; }
 
 /* ---- Buttons ---- */
 #BackButton {
-    background-color: transparent;
-    color: #6f6a60;
-    border: 1px solid #d5d0c5;
-    padding: 7px 18px;
-    font-size: 11px;
-    font-weight: bold;
-    letter-spacing: 2px;
+    background-color: #FFFFFF; color: #6E6A5F;
+    border: 1px solid #E7E3D8; border-radius: 9px;
+    padding: 7px 16px; font-size: 11px; font-weight: 700; letter-spacing: 1px;
 }
-
-#BackButton:hover {
-    color: #2b2a26;
-    border: 1px solid #b8b1a1;
-    background-color: #efece4;
-}
-
-#BackButton:pressed {
-    background-color: #e6e2d8;
-}
+#BackButton:hover { color: #2A2823; border-color: #D8D3C5; background-color: #FBFAF6; }
+#BackButton:pressed { background-color: #F0ECE2; }
 
 #PrimaryButton {
-    background-color: #c8a800;
-    color: #1a1a1a;
-    border: none;
-    padding: 10px 32px;
-    font-size: 12px;
-    font-weight: bold;
-    letter-spacing: 2px;
+    background-color: #C96442; color: #FFFFFF;
+    border: none; border-radius: 10px;
+    padding: 12px 32px; font-size: 12px; font-weight: 700; letter-spacing: 1px;
 }
-
-#PrimaryButton:hover {
-    background-color: #d4b300;
-}
-
-#PrimaryButton:pressed {
-    background-color: #a89000;
-}
-
-#PrimaryButton:disabled {
-    background-color: #e2ddd2;
-    color: #b7b1a4;
-}
+#PrimaryButton:hover { background-color: #B5573A; }
+#PrimaryButton:pressed { background-color: #9E4B30; }
+#PrimaryButton:disabled { background-color: #E7E1D5; color: #B0AB9C; }
 
 #SecondaryButton {
-    background-color: transparent;
-    color: #b8890c;
-    border: 1px solid #c8a800;
-    padding: 9px 24px;
-    font-size: 12px;
-    font-weight: bold;
-    letter-spacing: 2px;
+    background-color: transparent; color: #C96442;
+    border: 1px solid #C96442; border-radius: 10px;
+    padding: 11px 24px; font-size: 12px; font-weight: 700; letter-spacing: 1px;
 }
-
-#SecondaryButton:hover {
-    background-color: #faf4dd;
-}
-
-#SecondaryButton:pressed {
-    background-color: #f3ebc8;
-}
-
-#SecondaryButton:disabled {
-    border-color: #ddd8cc;
-    color: #c4bdaf;
-}
+#SecondaryButton:hover { background-color: #F7ECE6; }
+#SecondaryButton:pressed { background-color: #F0E0D8; }
+#SecondaryButton:disabled { border-color: #E7E3D8; color: #BCB7A8; }
 
 /* ---- Input fields ---- */
 QLineEdit {
-    background-color: #ffffff;
-    color: #2b2a26;
-    border: 1px solid #d5d0c5;
-    padding: 6px 10px;
-    font-size: 13px;
-    selection-background-color: #c8a800;
-    selection-color: #1a1a1a;
+    background-color: #FFFFFF; color: #2A2823;
+    border: 1px solid #E2DDD0; border-radius: 8px;
+    padding: 8px 11px; font-size: 13px;
+    selection-background-color: #C96442; selection-color: #FFFFFF;
 }
+QLineEdit:hover { border-color: #D2CCBC; }
+QLineEdit:focus { border: 1px solid #C96442; }
+QLineEdit:disabled { color: #B0AB9C; background-color: #F4F1EA; }
 
-QLineEdit:focus {
-    border: 1px solid #c8a800;
+QPlainTextEdit {
+    background-color: #FFFFFF; color: #2A2823;
+    border: 1px solid #E2DDD0; border-radius: 8px;
+    padding: 7px 9px; font-size: 13px;
+    selection-background-color: #C96442; selection-color: #FFFFFF;
 }
-
-QLineEdit:disabled {
-    color: #b7b1a4;
-    background-color: #f0ede6;
-}
+QPlainTextEdit:focus { border: 1px solid #C96442; }
 
 QDoubleSpinBox, QSpinBox {
-    background-color: #ffffff;
-    color: #2b2a26;
-    border: 1px solid #d5d0c5;
-    padding: 5px 8px;
-    font-size: 13px;
+    background-color: #FFFFFF; color: #2A2823;
+    border: 1px solid #E2DDD0; border-radius: 8px;
+    padding: 7px 9px; font-size: 13px;
 }
-
-QDoubleSpinBox:focus, QSpinBox:focus {
-    border: 1px solid #c8a800;
-}
-
+QDoubleSpinBox:hover, QSpinBox:hover { border-color: #D2CCBC; }
+QDoubleSpinBox:focus, QSpinBox:focus { border: 1px solid #C96442; }
 QDoubleSpinBox::up-button, QSpinBox::up-button {
-    subcontrol-origin: border;
-    subcontrol-position: top right;
-    background-color: #efece4;
-    border-left: 1px solid #d5d0c5;
-    border-bottom: 1px solid #d5d0c5;
-    width: 20px;
+    subcontrol-origin: border; subcontrol-position: top right;
+    background-color: #F4F1EA; border-left: 1px solid #E2DDD0;
+    border-bottom: 1px solid #E2DDD0; border-top-right-radius: 8px; width: 20px;
 }
-
 QDoubleSpinBox::down-button, QSpinBox::down-button {
-    subcontrol-origin: border;
-    subcontrol-position: bottom right;
-    background-color: #efece4;
-    border-left: 1px solid #d5d0c5;
-    width: 20px;
+    subcontrol-origin: border; subcontrol-position: bottom right;
+    background-color: #F4F1EA; border-left: 1px solid #E2DDD0;
+    border-bottom-right-radius: 8px; width: 20px;
 }
-
 QDoubleSpinBox::up-button:hover, QSpinBox::up-button:hover,
-QDoubleSpinBox::down-button:hover, QSpinBox::down-button:hover {
-    background-color: #c8a800;
-}
-
-QDoubleSpinBox::up-arrow, QSpinBox::up-arrow {
-    image: url(__ARROW_UP__);
-    width: 9px; height: 6px;
-}
-
-QDoubleSpinBox::down-arrow, QSpinBox::down-arrow {
-    image: url(__ARROW_DOWN__);
-    width: 9px; height: 6px;
-}
-
-QDoubleSpinBox::up-arrow:disabled, QSpinBox::up-arrow:disabled {
-    image: url(__ARROW_UP_DIM__);
-}
-
-QDoubleSpinBox::down-arrow:disabled, QSpinBox::down-arrow:disabled {
-    image: url(__ARROW_DOWN_DIM__);
-}
+QDoubleSpinBox::down-button:hover, QSpinBox::down-button:hover { background-color: #C96442; }
+QDoubleSpinBox::up-arrow, QSpinBox::up-arrow { image: url(__ARROW_UP__); width: 9px; height: 6px; }
+QDoubleSpinBox::down-arrow, QSpinBox::down-arrow { image: url(__ARROW_DOWN__); width: 9px; height: 6px; }
+QDoubleSpinBox::up-arrow:disabled, QSpinBox::up-arrow:disabled { image: url(__ARROW_UP_DIM__); }
+QDoubleSpinBox::down-arrow:disabled, QSpinBox::down-arrow:disabled { image: url(__ARROW_DOWN_DIM__); }
 
 QComboBox {
-    background-color: #ffffff;
-    color: #2b2a26;
-    border: 1px solid #d5d0c5;
-    padding: 5px 10px;
-    font-size: 13px;
+    background-color: #FFFFFF; color: #2A2823;
+    border: 1px solid #E2DDD0; border-radius: 8px;
+    padding: 7px 11px; font-size: 13px;
 }
-
-QComboBox:focus {
-    border: 1px solid #c8a800;
-}
-
+QComboBox:hover { border-color: #D2CCBC; }
+QComboBox:focus { border: 1px solid #C96442; }
 QComboBox::drop-down {
-    border: none;
-    width: 24px;
-    background-color: #efece4;
-    border-left: 1px solid #d5d0c5;
+    border: none; width: 26px; background-color: #F4F1EA;
+    border-left: 1px solid #E2DDD0; border-top-right-radius: 8px; border-bottom-right-radius: 8px;
 }
-
-QComboBox::down-arrow {
-    image: url(__ARROW_DOWN__);
-    width: 11px; height: 7px;
-}
-
+QComboBox::down-arrow { image: url(__ARROW_DOWN__); width: 11px; height: 7px; }
 QComboBox QAbstractItemView {
-    background-color: #ffffff;
-    color: #2b2a26;
-    border: 1px solid #cfc9bc;
-    selection-background-color: #c8a800;
-    selection-color: #1a1a1a;
-    outline: none;
+    background-color: #FFFFFF; color: #2A2823;
+    border: 1px solid #D8D3C5; border-radius: 8px;
+    selection-background-color: #C96442; selection-color: #FFFFFF;
+    padding: 4px; outline: none;
 }
 
-/* ---- Group box (parameter sections) ---- */
+/* ---- Group box (cards) ---- */
 QGroupBox {
-    border: 1px solid #e0dcd2;
-    border-top: 2px solid #e0dcd2;
-    margin-top: 18px;
-    padding-top: 14px;
-    font-size: 10px;
-    font-weight: bold;
-    color: #9a9487;
-    letter-spacing: 3px;
-    background-color: transparent;
+    border: 1px solid #E7E3D8; border-radius: 14px;
+    margin-top: 20px; padding: 20px 18px 16px 18px;
+    background-color: #FBFAF6;
+    font-size: 10px; font-weight: 700; color: #9C988A; letter-spacing: 3px;
 }
-
 QGroupBox::title {
-    subcontrol-origin: margin;
-    subcontrol-position: top left;
-    padding: 0 8px;
-    color: #9a9487;
-    background-color: #f5f3ee;
+    subcontrol-origin: margin; subcontrol-position: top left;
+    left: 14px; padding: 2px 8px;
+    color: #C96442; background-color: #F4F1EA;
     letter-spacing: 3px;
 }
 
 /* ---- Labels ---- */
-QLabel#FieldLabel {
-    color: #5f5a50;
-    font-size: 11px;
-    background-color: transparent;
-    letter-spacing: 1px;
-}
-
-QLabel#FieldUnit {
-    color: #b0a99c;
-    font-size: 11px;
-    background-color: transparent;
-}
-
-QLabel#StatusOk {
-    color: #2e7d32;
-    font-size: 11px;
-    font-weight: bold;
-    background-color: transparent;
-}
-
-QLabel#StatusError {
-    color: #c62828;
-    font-size: 11px;
-    font-weight: bold;
-    background-color: transparent;
-}
+QLabel#FieldLabel { color: #6E6A5F; font-size: 12px; background-color: transparent; }
+QLabel#FieldUnit { color: #A8A395; font-size: 11px; background-color: transparent; }
+QLabel#StatusOk { color: #2E9E5B; font-size: 12px; font-weight: 700; background-color: transparent; }
+QLabel#StatusError { color: #CB4B3E; font-size: 12px; font-weight: 700; background-color: transparent; }
 
 /* ---- Checkbox ---- */
-QCheckBox {
-    color: #4a463e;
-    font-size: 12px;
-    background-color: transparent;
-    spacing: 8px;
-}
-
-QCheckBox::indicator {
-    width: 16px;
-    height: 16px;
-    border: 1px solid #c9c3b6;
-    background-color: #ffffff;
-}
-
-QCheckBox::indicator:hover {
-    border: 1px solid #c8a800;
-}
-
-QCheckBox::indicator:checked {
-    background-color: #c8a800;
-    border: 1px solid #c8a800;
-}
-
-QCheckBox:disabled {
-    color: #b7b1a4;
-}
+QCheckBox { color: #2A2823; font-size: 12px; background-color: transparent; spacing: 8px; }
+QCheckBox::indicator { width: 16px; height: 16px; border: 1px solid #D8D3C5; border-radius: 5px; background-color: #FFFFFF; }
+QCheckBox::indicator:hover { border: 1px solid #C96442; }
+QCheckBox::indicator:checked { background-color: #C96442; border: 1px solid #C96442; }
+QCheckBox:disabled { color: #B0AB9C; }
 
 /* ---- Segmented YES/NO toggle ---- */
 #SegBtn {
-    background-color: #ffffff;
-    color: #8a857a;
-    border: 1px solid #d5d0c5;
-    padding: 4px 14px;
-    font-size: 11px;
-    font-weight: bold;
-    letter-spacing: 1px;
+    background-color: #FFFFFF; color: #6E6A5F;
+    border: 1px solid #E2DDD0; padding: 6px 16px;
+    font-size: 11px; font-weight: 700; letter-spacing: 1px;
 }
+#SegBtn:hover { color: #2A2823; border-color: #D2CCBC; }
+#SegBtn:checked { background-color: #C96442; color: #FFFFFF; border: 1px solid #C96442; }
 
-#SegBtn:hover {
-    color: #2b2a26;
-    border: 1px solid #c8a800;
-}
+/* ---- Derived readouts ---- */
+QLabel#ReadoutKey { color: #9C988A; font-size: 11px; background-color: transparent; }
+QLabel#ReadoutValue { color: #C96442; font-size: 15px; font-weight: 700; background-color: transparent; }
 
-#SegBtn:checked {
-    background-color: #c8a800;
-    color: #1a1a1a;
-    border: 1px solid #c8a800;
-}
-
-/* ---- Derived readout values ---- */
-QLabel#ReadoutKey {
-    color: #9a9487;
-    font-size: 11px;
-    background-color: transparent;
-}
-
-QLabel#ReadoutValue {
-    color: #b8890c;
-    font-size: 12px;
-    font-weight: bold;
-    background-color: transparent;
-}
-
-#PreviewLabel {
-    background-color: #141414;
-    border: 1px solid #d5d0c5;
-}
-
-#PreviewCaption {
-    color: #9a9487;
-    font-size: 11px;
-    background-color: transparent;
-}
+#PreviewLabel { background-color: #EFEBE1; border: 1px solid #E7E3D8; border-radius: 12px; }
+#PreviewCaption { color: #9C988A; font-size: 11px; background-color: transparent; }
 
 /* ---- Scrollbars ---- */
-QScrollBar:vertical {
-    background-color: #eceae3;
-    width: 6px;
-    margin: 0;
-}
+QScrollBar:vertical { background-color: transparent; width: 10px; margin: 2px; }
+QScrollBar::handle:vertical { background-color: #D8D3C5; min-height: 28px; border-radius: 5px; }
+QScrollBar::handle:vertical:hover { background-color: #C4BEAE; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+QScrollBar:horizontal { background-color: transparent; height: 10px; margin: 2px; }
+QScrollBar::handle:horizontal { background-color: #D8D3C5; min-width: 28px; border-radius: 5px; }
+QScrollBar::handle:horizontal:hover { background-color: #C4BEAE; }
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: transparent; }
 
-QScrollBar::handle:vertical {
-    background-color: #cfc9bc;
-    min-height: 24px;
-}
-
-QScrollBar::handle:vertical:hover {
-    background-color: #b8b1a1;
-}
-
-QScrollBar::add-line:vertical,
-QScrollBar::sub-line:vertical {
-    height: 0;
-}
-
-QScrollBar:horizontal {
-    background-color: #eceae3;
-    height: 6px;
-    margin: 0;
-}
-
-QScrollBar::handle:horizontal {
-    background-color: #cfc9bc;
-    min-width: 24px;
-}
-
-QScrollBar::handle:horizontal:hover {
-    background-color: #b8b1a1;
-}
-
-QScrollBar::add-line:horizontal,
-QScrollBar::sub-line:horizontal {
-    width: 0;
-}
-
-/* ---- Splitter ---- */
-QSplitter::handle {
-    background-color: #e0dcd2;
-}
-
-QSplitter::handle:horizontal {
-    width: 1px;
-}
-
-QSplitter::handle:vertical {
-    height: 1px;
-}
-
-/* ---- Separator line ---- */
-QFrame[frameShape="4"],
-QFrame[frameShape="5"] {
-    color: #e0dcd2;
-    background-color: #e0dcd2;
-}
+/* ---- Splitter / separators ---- */
+QSplitter::handle { background-color: #E7E3D8; }
+QSplitter::handle:horizontal { width: 1px; }
+QSplitter::handle:vertical { height: 1px; }
+QFrame[frameShape="4"], QFrame[frameShape="5"] { color: #E7E3D8; background-color: #E7E3D8; }
 
 /* ---- Tooltip ---- */
 QToolTip {
-    background-color: #ffffff;
-    color: #2b2a26;
-    border: 1px solid #cfc9bc;
-    padding: 4px 8px;
-    font-size: 12px;
+    background-color: #2A2823; color: #F4F1EA;
+    border: none; border-radius: 7px; padding: 5px 9px; font-size: 12px;
 }

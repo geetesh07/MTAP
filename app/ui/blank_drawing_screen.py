@@ -119,165 +119,144 @@ class BlankDrawingScreen(QWidget):
         sb.valueChanged.connect(self._on_input_change)
         return sb
 
-    def _row(self, grid: QGridLayout, r: int, label: str, widget: QWidget, unit: str = "") -> None:
-        lbl = QLabel(label)
-        lbl.setObjectName("FieldLabel")
-        grid.addWidget(lbl, r, 0)
-        grid.addWidget(widget, r, 1)
-        u = QLabel(unit)
-        u.setObjectName("FieldUnit")
-        u.setFixedWidth(28)
-        grid.addWidget(u, r, 2)
+    def _field(self, label: str, widget: QWidget, unit: str = "") -> QWidget:
+        """A modern field: small label stacked above the input (with optional unit)."""
+        box = QWidget()
+        v = QVBoxLayout(box)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(6)
+        lab = QLabel(label)
+        lab.setObjectName("FieldLabel")
+        v.addWidget(lab)
+        if unit:
+            r = QWidget()
+            h = QHBoxLayout(r)
+            h.setContentsMargins(0, 0, 0, 0)
+            h.setSpacing(8)
+            h.addWidget(widget, 1)
+            u = QLabel(unit)
+            u.setObjectName("FieldUnit")
+            h.addWidget(u)
+            v.addWidget(r)
+        else:
+            v.addWidget(widget)
+        return box
+
+    def _card(self, title: str) -> tuple[QGroupBox, QGridLayout]:
+        box = QGroupBox(title)
+        grid = QGridLayout(box)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        grid.setHorizontalSpacing(20)
+        grid.setVerticalSpacing(16)
+        return box, grid
 
     def _group_tool(self) -> QGroupBox:
-        box = QGroupBox("TOOL")
-        grid = QGridLayout(box)
-        grid.setColumnStretch(1, 1)
-        grid.setHorizontalSpacing(10)
-        grid.setVerticalSpacing(10)
-
+        box, grid = self._card("TOOL")
         self.tool_combo = NoScrollComboBox()
         self.tool_combo.addItem("Drill")
         self.tool_combo.addItem("End Mill (soon)")
         self.tool_combo.addItem("Reamer (soon)")
         for i in (1, 2):
             self.tool_combo.model().item(i).setEnabled(False)
-        self._row(grid, 0, "Tool type", self.tool_combo)
+        grid.addWidget(self._field("Tool type", self.tool_combo), 0, 0, 1, 2)
         return box
 
     def _group_dimensions(self) -> QGroupBox:
-        box = QGroupBox("DIMENSIONS")
-        grid = QGridLayout(box)
-        grid.setColumnStretch(1, 1)
-        grid.setHorizontalSpacing(10)
-        grid.setVerticalSpacing(10)
-
+        box, grid = self._card("DIMENSIONS")
         self.dc_spin = self._spin(10.0, 0.001, 100000, step=0.5)
         self.d_spin = self._spin(10.0, 0.001, 100000, step=0.5)
         self.oal_spin = self._spin(100.0, 0.001, 100000, step=1.0)
         self.ls_spin = self._spin(40.0, 0.001, 100000, step=1.0)
-
-        self._row(grid, 0, "Cutting dia (Dc)", self.dc_spin, "mm")
-        self._row(grid, 1, "Shank dia (D)", self.d_spin, "mm")
-        self._row(grid, 2, "Overall len (OAL)", self.oal_spin, "mm")
-        self._row(grid, 3, "Shank len (Ls)", self.ls_spin, "mm")
+        grid.addWidget(self._field("Cutting dia (Dc)", self.dc_spin, "mm"), 0, 0)
+        grid.addWidget(self._field("Shank dia (D)", self.d_spin, "mm"), 0, 1)
+        grid.addWidget(self._field("Overall length (OAL)", self.oal_spin, "mm"), 1, 0)
+        grid.addWidget(self._field("Shank length (Ls)", self.ls_spin, "mm"), 1, 1)
         return box
 
     def _group_geometry(self) -> QGroupBox:
-        box = QGroupBox("GEOMETRY")
-        grid = QGridLayout(box)
-        grid.setColumnStretch(1, 1)
-        grid.setHorizontalSpacing(10)
-        grid.setVerticalSpacing(10)
-
+        box, grid = self._card("GEOMETRY")
         self.point_spin = self._spin(140.0, 1.0, 180.0, decimals=1, step=1.0)
-        self._row(grid, 0, "Point angle", self.point_spin, "°")
+        grid.addWidget(self._field("Point angle", self.point_spin, "°"), 0, 0)
 
         self.reinf_toggle = YesNoToggle(value=False)
         self.reinf_toggle.changed.connect(self._on_reinf_toggle)
-        self._row(grid, 1, "Shank reinforcement", self.reinf_toggle)
+        grid.addWidget(self._field("Shank reinforcement", self.reinf_toggle), 0, 1)
 
-        self.reinf_angle_label = QLabel("Reinf angle (from CL)")
-        self.reinf_angle_label.setObjectName("FieldLabel")
         self.reinf_angle_spin = self._spin(30.0, 0.1, 89.9, decimals=1, step=1.0)
-        self.reinf_angle_unit = QLabel("°")
-        self.reinf_angle_unit.setObjectName("FieldUnit")
-        self.reinf_angle_unit.setFixedWidth(28)
-        grid.addWidget(self.reinf_angle_label, 2, 0)
-        grid.addWidget(self.reinf_angle_spin, 2, 1)
-        grid.addWidget(self.reinf_angle_unit, 2, 2)
-        self.reinf_angle_label.setVisible(False)
-        self.reinf_angle_spin.setVisible(False)
-        self.reinf_angle_unit.setVisible(False)
+        self.reinf_angle_field = self._field("Reinf angle (from CL)", self.reinf_angle_spin, "°")
+        self.reinf_angle_field.setVisible(False)
+        grid.addWidget(self.reinf_angle_field, 1, 0)
 
         self.coolant_toggle = YesNoToggle(value=False)
-        self._row(grid, 3, "Through coolant", self.coolant_toggle)
+        grid.addWidget(self._field("Through coolant", self.coolant_toggle), 1, 1)
         return box
 
     def _group_annotations(self) -> QGroupBox:
-        box = QGroupBox("ANNOTATIONS")
-        grid = QGridLayout(box)
-        grid.setColumnStretch(1, 1)
-        grid.setHorizontalSpacing(10)
-        grid.setVerticalSpacing(10)
-
+        box, grid = self._card("ANNOTATIONS")
         self.back_taper_spin = self._spin(0.050, 0.0, 10.0, decimals=3, step=0.001)
-        self._row(grid, 0, "Back taper", self.back_taper_spin, "mm/100mm")
-
+        grid.addWidget(self._field("Back taper", self.back_taper_spin, "mm/100"), 0, 0)
         self.runout_spin = self._spin(0.010, 0.0, 1.0, decimals=3, step=0.001)
-        self._row(grid, 1, "Runout tol (GD&T)", self.runout_spin, "mm")
+        grid.addWidget(self._field("Runout tol (GD&T)", self.runout_spin, "mm"), 0, 1)
         return box
 
     def _group_flute(self) -> QGroupBox:
-        box = QGroupBox("FLUTE")
-        grid = QGridLayout(box)
-        grid.setColumnStretch(1, 1)
-        grid.setHorizontalSpacing(10)
-        grid.setVerticalSpacing(10)
-
+        box, grid = self._card("FLUTE")
         self.flute_auto = YesNoToggle(value=True)
         self.flute_auto.changed.connect(self._on_flute_auto_toggle)
-        self._row(grid, 0, "Auto flute length", self.flute_auto)
-
+        grid.addWidget(self._field("Auto flute length", self.flute_auto), 0, 0)
         self.flute_spin = self._spin(60.0, 0.0, 100000, step=1.0)
         self.flute_spin.setEnabled(False)
-        self._row(grid, 1, "Flute length", self.flute_spin, "mm")
+        grid.addWidget(self._field("Flute length", self.flute_spin, "mm"), 0, 1)
         return box
 
     def _group_details(self) -> QGroupBox:
         """Title-block / template details — filled into the customer template."""
-        box = QGroupBox("DRAWING DETAILS")
-        grid = QGridLayout(box)
-        grid.setColumnStretch(1, 1)
-        grid.setHorizontalSpacing(10)
-        grid.setVerticalSpacing(10)
-
+        box, grid = self._card("DRAWING DETAILS")
         self.customer_edit = QLineEdit()
         self.customer_edit.setPlaceholderText("Customer name")
-        self._row(grid, 0, "Customer", self.customer_edit)
+        grid.addWidget(self._field("Customer", self.customer_edit), 0, 0)
 
         self.drawn_edit = QLineEdit()
         self.drawn_edit.setPlaceholderText("Drawn by")
-        self._row(grid, 1, "Drawn by", self.drawn_edit)
+        grid.addWidget(self._field("Drawn by", self.drawn_edit), 0, 1)
 
         self.checked_edit = QLineEdit()
         self.checked_edit.setPlaceholderText("Checked by")
-        self._row(grid, 2, "Checked by", self.checked_edit)
+        grid.addWidget(self._field("Checked by", self.checked_edit), 1, 0)
 
-        desc_lbl = QLabel("Description")
-        desc_lbl.setObjectName("FieldLabel")
-        grid.addWidget(desc_lbl, 3, 0, Qt.AlignmentFlag.AlignTop)
         self.desc_edit = QPlainTextEdit()
         self.desc_edit.setPlaceholderText("Longer description for the title block…")
-        self.desc_edit.setFixedHeight(90)
-        grid.addWidget(self.desc_edit, 3, 1, 1, 2)
+        self.desc_edit.setFixedHeight(84)
+        grid.addWidget(self._field("Description", self.desc_edit), 2, 0, 1, 2)
         return box
 
     def _group_derived(self) -> QGroupBox:
-        box = QGroupBox("DERIVED")
-        grid = QGridLayout(box)
-        grid.setColumnStretch(1, 1)
-        grid.setVerticalSpacing(7)
-
-        self.read_point = self._readout(grid, 0, "Point length")
-        self.read_reinf = self._readout(grid, 1, "Reinforcement length")
-        self.read_body = self._readout(grid, 2, "Body length")
-        self.read_flute = self._readout(grid, 3, "Flute length")
+        box, grid = self._card("DERIVED")
+        self.read_point = self._readout(grid, 0, 0, "Point length")
+        self.read_reinf = self._readout(grid, 0, 1, "Reinforcement length")
+        self.read_body = self._readout(grid, 1, 0, "Body length")
+        self.read_flute = self._readout(grid, 1, 1, "Flute length")
 
         self.status_label = QLabel("")
+        self.status_label.setObjectName("StatusOk")
         self.status_label.setWordWrap(True)
-        grid.addWidget(self.status_label, 4, 0, 1, 2)
+        grid.addWidget(self.status_label, 2, 0, 1, 2)
         return box
 
-    def _readout(self, grid: QGridLayout, r: int, key: str) -> QLabel:
+    def _readout(self, grid: QGridLayout, r: int, c: int, key: str) -> QLabel:
+        cell = QWidget()
+        v = QVBoxLayout(cell)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(2)
         k = QLabel(key)
         k.setObjectName("ReadoutKey")
-        v = QLabel("—")
-        v.setObjectName("ReadoutValue")
-        v.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        grid.addWidget(k, r, 0)
-        grid.addWidget(v, r, 1)
-        return v
+        val = QLabel("—")
+        val.setObjectName("ReadoutValue")
+        v.addWidget(k)
+        v.addWidget(val)
+        grid.addWidget(cell, r, c)
+        return val
 
     def _build_action_bar(self) -> QWidget:
         bar = QWidget()
@@ -335,9 +314,7 @@ class BlankDrawingScreen(QWidget):
         self._recompute()
 
     def _on_reinf_toggle(self, checked: bool) -> None:
-        self.reinf_angle_label.setVisible(checked)
-        self.reinf_angle_spin.setVisible(checked)
-        self.reinf_angle_unit.setVisible(checked)
+        self.reinf_angle_field.setVisible(checked)
         self._recompute()
 
     def _on_flute_auto_toggle(self, checked: bool) -> None:
