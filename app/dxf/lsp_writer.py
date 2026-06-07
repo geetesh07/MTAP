@@ -253,34 +253,34 @@ _LIBRARY = r"""
 ;; Fill the title-block attributes from the app's metadata and force the filled
 ;; values YELLOW (color 2).  Tag matching is case-insensitive with aliases, and
 ;; every tag found is echoed so a mismatch is obvious on the command line.
-(defun MTAP:fill-template (blk / e ed tag val)
+;;
+;; Uses ActiveX vla-put-TextString rather than (entmod (cons 1 val)).  A MULTILINE
+;; attribute (e.g. DESC) is an AcDbAttribute wrapping an embedded AcDbMText, so its
+;; visible text comes from that sub-object — editing DXF group 1 changes the stored
+;; tag but NOT the displayed text, which is why DESC appeared blank.  TextString
+;; updates both single-line and multiline attributes correctly.
+(defun MTAP:fill-template (blk / obj att tag val)
   (if blk
     (progn
-      (setq e (entnext blk))
-      (while (and e (/= (cdr (assoc 0 (entget e))) "SEQEND"))
-        (setq ed (entget e))
-        (if (= (cdr (assoc 0 ed)) "ATTRIB")
-          (progn
-            (setq tag (strcase (cdr (assoc 2 ed)))
-                  val (cond
-                        ((member tag '("CUSTOMER" "CLIENT" "COMPANY")) MTAP:CUSTOMER)
-                        ((member tag '("DRAWNBY" "DRAWN BY" "DRAWN_BY" "DRAWN" "DRWN" "BY")) MTAP:DRAWNBY)
-                        ((member tag '("CHECKEDBY" "CHECKED BY" "CHECKED_BY" "CHECKED" "CHKBY" "CHK")) MTAP:CHECKEDBY)
-                        ((member tag '("TITLE" "PARTNAME" "PART" "PART NAME" "NAME")) MTAP:TITLE)
-                        ((member tag '("DATE")) MTAP:DATE)
-                        ((member tag '("DESC" "DESCRIPTION" "REMARKS" "REMARK" "NOTES" "NOTE")) MTAP:DESC)
-                        (T nil)))
-            (princ (strcat "\n  attrib " tag
-                           (if val (strcat " <= \"" val "\"") "  (no match — left as-is)")))
-            (if val
-              (progn
-                (entmod (subst (cons 1 val) (assoc 1 ed) ed))
-                (setq ed (entget e))           ; re-read after value change
-                (if (assoc 62 ed)
-                  (entmod (subst '(62 . 2) (assoc 62 ed) ed))
-                  (entmod (append ed '((62 . 2)))))
-                (entupd e)))))
-        (setq e (entnext e)))))
+      (setq obj (vlax-ename->vla-object blk))
+      (if (= (vla-get-HasAttributes obj) :vlax-true)
+        (foreach att (vlax-invoke obj 'GetAttributes)
+          (setq tag (strcase (vla-get-TagString att))
+                val (cond
+                      ((member tag '("CUSTOMER" "CLIENT" "COMPANY")) MTAP:CUSTOMER)
+                      ((member tag '("DRAWNBY" "DRAWN BY" "DRAWN_BY" "DRAWN" "DRWN" "BY")) MTAP:DRAWNBY)
+                      ((member tag '("CHECKEDBY" "CHECKED BY" "CHECKED_BY" "CHECKED" "CHKBY" "CHK")) MTAP:CHECKEDBY)
+                      ((member tag '("TITLE" "PARTNAME" "PART" "PART NAME" "NAME")) MTAP:TITLE)
+                      ((member tag '("DATE")) MTAP:DATE)
+                      ((member tag '("DESC" "DESCRIPTION" "REMARKS" "REMARK" "NOTES" "NOTE")) MTAP:DESC)
+                      (T nil)))
+          (princ (strcat "\n  attrib " tag
+                         (if val (strcat " <= \"" val "\"") "  (no match — left as-is)")))
+          (if val
+            (progn
+              (vl-catch-all-apply (function (lambda () (vla-put-TextString att val))))
+              (vl-catch-all-apply (function (lambda () (vla-put-Color att 2))))
+              (vl-catch-all-apply (function (lambda () (vla-update att))))))))))
   (princ))
 
 ;; main draw
@@ -300,7 +300,7 @@ _LIBRARY = r"""
         (MTAP:setvars)
 
         ;; version + scale banner — confirms you're running the latest link file
-        (princ (strcat "\n=== MTAP build R12 ==="
+        (princ (strcat "\n=== MTAP build R13 ==="
                        "\n  block scales:  BT=" (rtos MTAP:SCALE_BT 2 2)
                        "  GDT=" (rtos MTAP:SCALE_GDT 2 2)
                        "  DAT=" (rtos MTAP:SCALE_DAT 2 2)
@@ -426,9 +426,16 @@ def _lsp_path(p: str) -> str:
 
 
 def _lstr(s) -> str:
-    """Quote a Python string as an AutoLISP string literal (escapes \\ and ")."""
+    """Quote a Python string as an AutoLISP string literal (escapes \\ and ").
+
+    Newlines (only possible from the multiline Description box) are converted to
+    the MTEXT paragraph code \\P so they (a) never break the .lsp file with a raw
+    newline inside a string literal and (b) render as real line breaks in the
+    multiline DESC attribute.  Single-line fields never contain newlines.
+    """
     s = "" if s is None else str(s)
     s = s.replace("\\", "\\\\").replace('"', '\\"')
+    s = s.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\\\\P")
     return f'"{s}"'
 
 
