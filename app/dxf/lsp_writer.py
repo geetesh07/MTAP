@@ -149,19 +149,6 @@ _LIBRARY = r"""
       (progn (entmod (subst (cons 1 val) (assoc 1 ed) ed)) (entupd e)))
     (setq e (entnext e))))
 
-;; Draw a Q-leader (real arrowhead, size = DIMASZ) FROM the annotated point
-;; 'arrow' TO the BOTTOM-LEFT corner of an inserted block.  No text annotation.
-;; The corner is read from the block's actual bounding box so it works whatever
-;; the block's own insertion base point is.
-(defun MTAP:block-leader (blk arrow / o lo hi bl)
-  (vl-catch-all-apply
-    (function (lambda ()
-      (setq o (vlax-ename->vla-object blk))
-      (vla-getboundingbox o 'lo 'hi)
-      (setq lo (vlax-safearray->list lo)
-            bl (list (car lo) (cadr lo)))   ; (xmin, ymin) = bottom-left corner
-      (command "_.LEADER" arrow bl "" "" "_None")))))
-
 ;; ── TEMPLATE: center the drawing inside the customer title-block window ───────
 ;; Union the bounding boxes of every entity created AFTER 'startent' (the whole
 ;; tool drawing: outline, dims, annotation blocks, note).  Returns (mn mx) or nil.
@@ -246,6 +233,10 @@ _LIBRARY = r"""
       ;; window-center(world) = IP + s*window-center(local)  =>  solve for IP
       (setq ipx (- tcx (* s wcx))
             ipy (- tcy (* s wcy)))
+      ;; remember the WINDOW rectangle in WORLD coords (for placing the title)
+      (setq MTAP:WINWORLD
+        (list (list (+ ipx (* s (car wmn))) (+ ipy (* s (cadr wmn))))
+              (list (+ ipx (* s (car wmx))) (+ ipy (* s (cadr wmx))))))
       (princ (strcat "\n  template " (if usedwin "(window)" "(full-extents)")
                      " scale=" (rtos s 2 3)
                      "  box=" (rtos ww 2 1) "x" (rtos wh 2 1)
@@ -260,6 +251,7 @@ _LIBRARY = r"""
                               "_Plot" "_No" "MTAP_WINDOW" ""))))
       ins)
     (progn
+      (setq MTAP:WINWORLD nil)
       (princ "\n*** MTAP: template has no measurable geometry; border skipped.")
       nil)))
 
@@ -297,7 +289,7 @@ _LIBRARY = r"""
   (princ))
 
 ;; main draw
-(defun MTAP:draw ( / osm cme res blk tb)
+(defun MTAP:draw ( / osm cme res blk tb twh tth ttx tty)
   (setq osm (getvar "OSMODE") cme (getvar "CMDECHO"))
   (setvar "OSMODE" 0) (setvar "CMDECHO" 0)
 
@@ -313,7 +305,7 @@ _LIBRARY = r"""
         (MTAP:setvars)
 
         ;; version + scale banner — confirms you're running the latest link file
-        (princ (strcat "\n=== MTAP build R18 ==="
+        (princ (strcat "\n=== MTAP build R19 ==="
                        "\n  block scales:  BT=" (rtos MTAP:SCALE_BT 2 2)
                        "  GDT=" (rtos MTAP:SCALE_GDT 2 2)
                        "  DAT=" (rtos MTAP:SCALE_DAT 2 2)
@@ -387,32 +379,39 @@ _LIBRARY = r"""
             (command "_.LINE" MTAP:GDT_LDR1 MTAP:GDT_LDR2 "")
             (MTAP:ins-block "MTAP_DATUM" MTAP:DATINS MTAP:SCALE_DAT)))
 
-        ;; back taper — block on annot layer; Q-leader (red) with a real arrow,
-        ;; arrow at the flute start (shank-side body end), tail at block bottom-left
+        ;; back taper — block on annot layer; Q-leader (red) with a real arrow.
+        ;; Arrow at the flute start (shank-side body end); the leader TAIL goes to
+        ;; MTAP:BTINS — the back-taper block's OWN insertion point — so it always
+        ;; lands on that block (never the datum).  Draw it BEFORE the block so the
+        ;; block sits on top of the leader tail.
         (if MTAP:HASBT
           (progn
+            (setvar "CLAYER" "MTAP-DIM")   ; red leader
+            (setvar "DIMASZ" MTAP:TXT)
+            (vl-catch-all-apply
+              (function (lambda ()
+                (command "_.LEADER" MTAP:BT_ARROW MTAP:BTINS "" "" "_None"))))
             (setvar "CLAYER" "MTAP-ANNOT")
             (setq blk (MTAP:ins-block "MTAP_BACKTAPER" MTAP:BTINS MTAP:SCALE_BT))
-            (MTAP:set-attrib blk "VAL" MTAP:BTVAL)
-            (setvar "CLAYER" "MTAP-DIM")   ; red leader
-            (MTAP:block-leader blk MTAP:BT_ARROW)))
-
-        ;; drawing title above the model (yellow annot layer) — only for a
-        ;; Blank-mode Drill blank.  Centered over the model, sat just above the
-        ;; current top extent (measured live so it never overlaps the blocks).
-        (if MTAP:HASTITLE
-          (progn
-            (setvar "CLAYER" "MTAP-ANNOT")
-            (setq tb (MTAP:range-bbox MTAP:TOOLSTART))
-            (if tb
-              (command "_.TEXT" "_Justify" "_Middle"
-                       (list MTAP:TITLECX (+ (cadr (cadr tb)) (* MTAP:TXT 2.0)))
-                       (* MTAP:TXT 2.0) 0 MTAP:TITLETEXT))))
+            (MTAP:set-attrib blk "VAL" MTAP:BTVAL)))
 
         ;; ---- customer template: border + title block, scaled to wrap the
         ;; drawing and positioned so the tool is centered in the window ----
         (setq blk (MTAP:place-template (MTAP:range-bbox MTAP:TOOLSTART)))
         (MTAP:fill-template blk)
+
+        ;; drawing title (yellow) — only for a Blank-mode Drill blank.  Placed near
+        ;; the TOP EDGE of the sheet, horizontally centered, sized to the window.
+        (if (and MTAP:HASTITLE MTAP:WINWORLD)
+          (progn
+            (setvar "CLAYER" "MTAP-ANNOT")
+            (setq tb  MTAP:WINWORLD
+                  twh (- (cadr (cadr tb)) (cadr (car tb)))   ; window height (world)
+                  tth (* twh 0.045)                          ; title height ~4.5% of window
+                  ttx (/ (+ (car (car tb)) (car (cadr tb))) 2.0)  ; window center X
+                  tty (- (cadr (cadr tb)) (* tth 1.4)))      ; just below the top edge
+            (command "_.TEXT" "_Justify" "_Middle"
+                     (list ttx tty) tth 0 MTAP:TITLETEXT)))
 
         (command "_.ZOOM" "_Extents")
         "ok"))))
@@ -754,10 +753,9 @@ class LspWriter:
         is_drill_blank = str(p.tool_type).strip().lower() == "drill"
         a(f"(setq MTAP:HASTITLE {_bool(is_drill_blank)})")
         if is_drill_blank:
-            a(f"(setq MTAP:TITLECX {_num(p.overall_length / 2.0)})")
             a(f"(setq MTAP:TITLETEXT {_lstr(p.tool_type.upper() + ' BLANK DRAWING')})")
         else:
-            a("(setq MTAP:TITLECX nil MTAP:TITLETEXT nil)")
+            a("(setq MTAP:TITLETEXT nil)")
         a("")
 
         # auto-execute
