@@ -149,6 +149,20 @@ _LIBRARY = r"""
       (progn (entmod (subst (cons 1 val) (assoc 1 ed) ed)) (entupd e)))
     (setq e (entnext e))))
 
+;; Draw a Q-leader (real arrowhead, size = DIMASZ) FROM the annotated point
+;; 'arrow' TO the BOTTOM-RIGHT corner of an inserted block.  No text annotation.
+;; Bottom-right is read from the block's actual bounding box so it works whatever
+;; the block's own insertion base point is.
+(defun MTAP:block-leader (blk arrow / o lo hi br)
+  (vl-catch-all-apply
+    (function (lambda ()
+      (setq o (vlax-ename->vla-object blk))
+      (vla-getboundingbox o 'lo 'hi)
+      (setq lo (vlax-safearray->list lo)
+            hi (vlax-safearray->list hi)
+            br (list (car hi) (cadr lo)))   ; (xmax, ymin) = bottom-right corner
+      (command "_.LEADER" arrow br "" "" "_None")))))
+
 ;; ── TEMPLATE: center the drawing inside the customer title-block window ───────
 ;; Union the bounding boxes of every entity created AFTER 'startent' (the whole
 ;; tool drawing: outline, dims, annotation blocks, note).  Returns (mn mx) or nil.
@@ -300,7 +314,7 @@ _LIBRARY = r"""
         (MTAP:setvars)
 
         ;; version + scale banner — confirms you're running the latest link file
-        (princ (strcat "\n=== MTAP build R14 ==="
+        (princ (strcat "\n=== MTAP build R15 ==="
                        "\n  block scales:  BT=" (rtos MTAP:SCALE_BT 2 2)
                        "  GDT=" (rtos MTAP:SCALE_GDT 2 2)
                        "  DAT=" (rtos MTAP:SCALE_DAT 2 2)
@@ -364,25 +378,25 @@ _LIBRARY = r"""
         (command "_.DIMLINEAR" MTAP:OAL1 MTAP:OAL2 "_Horizontal"
                  (list (/ (+ (car MTAP:OAL1) (car MTAP:OAL2)) 2.0) MTAP:FAR))
 
-        ;; GD&T — frame above Dc dim (leader from bottom-left corner) + datum
-        ;; block floated above the shank with its own leader to the surface
+        ;; GD&T — frame above Dc dim (leader from bottom-left corner).  The datum
+        ;; block carries its OWN leader (drawn inside the block), so we just insert it.
         (setvar "CLAYER" "MTAP-DIM")
         (if MTAP:HASGDT
           (progn
             (setq blk (MTAP:ins-block "MTAP_GDT" MTAP:GDTINS MTAP:SCALE_GDT))
             (MTAP:set-attrib blk "VAL" MTAP:GDTVAL)
             (command "_.LINE" MTAP:GDT_LDR1 MTAP:GDT_LDR2 "")
-            (MTAP:ins-block "MTAP_DATUM" MTAP:DATINS MTAP:SCALE_DAT)
-            (command "_.LINE" MTAP:DAT_LDR1 MTAP:DAT_LDR2 "")))
+            (MTAP:ins-block "MTAP_DATUM" MTAP:DATINS MTAP:SCALE_DAT)))
 
-        ;; back taper — block on annot layer, leader on DIM layer (red)
+        ;; back taper — block on annot layer; Q-leader (red) with a real arrow,
+        ;; arrow at the reinforcement end / flute start, tail at block bottom-right
         (if MTAP:HASBT
           (progn
             (setvar "CLAYER" "MTAP-ANNOT")
             (setq blk (MTAP:ins-block "MTAP_BACKTAPER" MTAP:BTINS MTAP:SCALE_BT))
             (MTAP:set-attrib blk "VAL" MTAP:BTVAL)
             (setvar "CLAYER" "MTAP-DIM")   ; red leader
-            (command "_.LINE" MTAP:BT_LDR1 MTAP:BT_LDR2 "")))
+            (MTAP:block-leader blk MTAP:BT_ARROW)))
 
         ;; general note (yellow annotation layer)
         (setvar "CLAYER" "MTAP-ANNOT")
@@ -702,18 +716,17 @@ class LspWriter:
             # leader anchored at the frame's BOTTOM-LEFT corner, dropping straight down
             a(f"(setq MTAP:GDT_LDR1 {_pt(fx, fy)})")   # bottom-left corner of frame
             a(f"(setq MTAP:GDT_LDR2 {_pt(fx, rc)})")   # straight down to the part top
-            # datum: floats above the shank with its own leader down to the surface
+            # datum: floats above the shank.  The leader is built INTO the block now,
+            # so we only emit its insertion point (no separate leader line).
             dat_y = rs + gap * 1.5
             a(f"(setq MTAP:DATINS   {_pt(dat_x, dat_y)})")
-            a(f"(setq MTAP:DAT_LDR1 {_pt(dat_x, dat_y)})")  # bottom-left corner of datum
-            a(f"(setq MTAP:DAT_LDR2 {_pt(dat_x, rs)})")      # down to shank surface
         else:
             for v in ("MTAP:GDTINS","MTAP:GDTVAL","MTAP:GDT_LDR1","MTAP:GDT_LDR2",
-                      "MTAP:DATINS","MTAP:DAT_LDR1","MTAP:DAT_LDR2"):
+                      "MTAP:DATINS"):
                 a(f"(setq {v} nil)")
         a("")
 
-        # back taper block + leader
+        # back taper block + Q-leader
         # Positioned in the body, biased toward the shank transition and well
         # clear of the point angle (which lives at the tip end of the body).
         has_bt = p.back_taper > 0
@@ -723,11 +736,17 @@ class LspWriter:
             bt_y = rmax + gap * 1.5          # sit just above the body
             a(f"(setq MTAP:BTINS   {_pt(bt_x, bt_y)})")
             a(f'(setq MTAP:BTVAL   "{p.back_taper:.3f}")')
-            # leader drops straight from the block's bottom-left corner to body
-            a(f"(setq MTAP:BT_LDR1 {_pt(bt_x, bt_y)})")  # bottom-left corner of block
-            a(f"(setq MTAP:BT_LDR2 {_pt(bt_x, rc)})")    # straight down to body surface
+            # Q-leader arrow point (the surface location the leader points at):
+            #   reinforcement present -> the END of the reinforcement (shank side)
+            #   no reinforcement      -> the START of the flute (body start)
+            # The leader's tail attaches to the block's bottom-right corner (LISP).
+            if reinf:
+                bt_ax, bt_ay = p.x_shank_start, rs
+            else:
+                bt_ax, bt_ay = p.x_point_base, rc
+            a(f"(setq MTAP:BT_ARROW {_pt(bt_ax, bt_ay)})")
         else:
-            a("(setq MTAP:BTINS nil MTAP:BTVAL nil MTAP:BT_LDR1 nil MTAP:BT_LDR2 nil)")
+            a("(setq MTAP:BTINS nil MTAP:BTVAL nil MTAP:BT_ARROW nil)")
         a("")
 
         # general note
