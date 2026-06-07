@@ -150,18 +150,17 @@ _LIBRARY = r"""
     (setq e (entnext e))))
 
 ;; Draw a Q-leader (real arrowhead, size = DIMASZ) FROM the annotated point
-;; 'arrow' TO the BOTTOM-RIGHT corner of an inserted block.  No text annotation.
-;; Bottom-right is read from the block's actual bounding box so it works whatever
+;; 'arrow' TO the BOTTOM-LEFT corner of an inserted block.  No text annotation.
+;; The corner is read from the block's actual bounding box so it works whatever
 ;; the block's own insertion base point is.
-(defun MTAP:block-leader (blk arrow / o lo hi br)
+(defun MTAP:block-leader (blk arrow / o lo hi bl)
   (vl-catch-all-apply
     (function (lambda ()
       (setq o (vlax-ename->vla-object blk))
       (vla-getboundingbox o 'lo 'hi)
       (setq lo (vlax-safearray->list lo)
-            hi (vlax-safearray->list hi)
-            br (list (car hi) (cadr lo)))   ; (xmax, ymin) = bottom-right corner
-      (command "_.LEADER" arrow br "" "" "_None")))))
+            bl (list (car lo) (cadr lo)))   ; (xmin, ymin) = bottom-left corner
+      (command "_.LEADER" arrow bl "" "" "_None")))))
 
 ;; ── TEMPLATE: center the drawing inside the customer title-block window ───────
 ;; Union the bounding boxes of every entity created AFTER 'startent' (the whole
@@ -314,7 +313,7 @@ _LIBRARY = r"""
         (MTAP:setvars)
 
         ;; version + scale banner — confirms you're running the latest link file
-        (princ (strcat "\n=== MTAP build R16 ==="
+        (princ (strcat "\n=== MTAP build R17 ==="
                        "\n  block scales:  BT=" (rtos MTAP:SCALE_BT 2 2)
                        "  GDT=" (rtos MTAP:SCALE_GDT 2 2)
                        "  DAT=" (rtos MTAP:SCALE_DAT 2 2)
@@ -389,7 +388,7 @@ _LIBRARY = r"""
             (MTAP:ins-block "MTAP_DATUM" MTAP:DATINS MTAP:SCALE_DAT)))
 
         ;; back taper — block on annot layer; Q-leader (red) with a real arrow,
-        ;; arrow at the reinforcement end / flute start, tail at block bottom-right
+        ;; arrow at the flute start, tail at the block's bottom-left corner
         (if MTAP:HASBT
           (progn
             (setvar "CLAYER" "MTAP-ANNOT")
@@ -723,10 +722,9 @@ class LspWriter:
             # leader anchored at the frame's BOTTOM-LEFT corner, dropping straight down
             a(f"(setq MTAP:GDT_LDR1 {_pt(fx, fy)})")   # bottom-left corner of frame
             a(f"(setq MTAP:GDT_LDR2 {_pt(fx, rc)})")   # straight down to the part top
-            # datum: floats above the shank.  The leader is built INTO the block now,
-            # so we only emit its insertion point (no separate leader line).
-            dat_y = rs + gap * 1.5
-            a(f"(setq MTAP:DATINS   {_pt(dat_x, dat_y)})")
+            # datum: base point sits ON the shank surface so the block's own
+            # built-in leader connects down to the object (no separate line).
+            a(f"(setq MTAP:DATINS   {_pt(dat_x, rs)})")
         else:
             for v in ("MTAP:GDTINS","MTAP:GDTVAL","MTAP:GDT_LDR1","MTAP:GDT_LDR2",
                       "MTAP:DATINS"):
@@ -743,15 +741,9 @@ class LspWriter:
             bt_y = rmax + gap * 1.5          # sit just above the body
             a(f"(setq MTAP:BTINS   {_pt(bt_x, bt_y)})")
             a(f'(setq MTAP:BTVAL   "{p.back_taper:.3f}")')
-            # Q-leader arrow point (the surface location the leader points at):
-            #   reinforcement present -> the END of the reinforcement (shank side)
-            #   no reinforcement      -> the START of the flute (body start)
-            # The leader's tail attaches to the block's bottom-right corner (LISP).
-            if reinf:
-                bt_ax, bt_ay = p.x_shank_start, rs
-            else:
-                bt_ax, bt_ay = p.x_point_base, rc
-            a(f"(setq MTAP:BT_ARROW {_pt(bt_ax, bt_ay)})")
+            # Q-leader arrow point = START OF THE FLUTE (body start, on the Dc
+            # surface).  Tail attaches to the block's bottom-left corner (LISP).
+            a(f"(setq MTAP:BT_ARROW {_pt(p.x_point_base, rc)})")
         else:
             a("(setq MTAP:BTINS nil MTAP:BTVAL nil MTAP:BT_ARROW nil)")
         a("")
