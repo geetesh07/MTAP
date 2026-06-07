@@ -317,7 +317,7 @@ _LIBRARY = r"""
         (MTAP:make-layer "MTAP-CENTER"  4 "CENTER")
         (MTAP:make-layer "MTAP-DIM"     1 "Continuous")
         (MTAP:make-layer "MTAP-ANNOT"   2 "Continuous")
-        (MTAP:make-layer "MTAP-COOLANT" 6 "DOT")
+        (MTAP:make-layer "MTAP-COOLANT" 6 "HIDDEN2")
         ;; force a true PINK on the coolant layer (falls back to ACI 6 if it fails)
         (vl-catch-all-apply
           (function (lambda ( / e ed)
@@ -328,7 +328,7 @@ _LIBRARY = r"""
         (MTAP:setvars)
 
         ;; version + scale banner — confirms you're running the latest link file
-        (princ (strcat "\n=== MTAP build R24 ==="
+        (princ (strcat "\n=== MTAP build R25 ==="
                        "\n  block scales:  BT=" (rtos MTAP:SCALE_BT 2 2)
                        "  GDT=" (rtos MTAP:SCALE_GDT 2 2)
                        "  DAT=" (rtos MTAP:SCALE_DAT 2 2)
