@@ -204,6 +204,19 @@ _LIBRARY = r"""
     (setq e (entnext e)))
   (if (and mn mx) (list mn mx) nil))
 
+;; World BOTTOM-RIGHT corner of block 'name' when inserted at 'ip' with scale 'sc'.
+;; Computed from the block DEFINITION's geometry extents (coords are relative to
+;; the block base point, which maps to 'ip'), so it never depends on a fragile
+;; inserted-instance bounding box.  bottom-right = (max_x, min_y) in local coords.
+(defun MTAP:block-br (name ip sc / be lmn lmx)
+  (setq be (MTAP:block-extents name))
+  (if be
+    (progn
+      (setq lmn (car be) lmx (cadr be))
+      (list (+ (car ip)  (* sc (car lmx)))     ; ip.x + sc * max_x
+            (+ (cadr ip) (* sc (cadr lmn)))))  ; ip.y + sc * min_y
+    ip))
+
 ;; Insert MTAP_TEMPLATE scaled so its MTAP_WINDOW wraps the tool bbox with a
 ;; little margin, positioned so the WINDOW CENTER lands on the TOOL CENTER —
 ;; i.e. the drawing is centered in the rectangle both horizontally & vertically.
@@ -289,7 +302,7 @@ _LIBRARY = r"""
   (princ))
 
 ;; main draw
-(defun MTAP:draw ( / osm cme res blk tb twh tth ttx tty)
+(defun MTAP:draw ( / osm cme res blk btbr tb twh tth ttx tty)
   (setq osm (getvar "OSMODE") cme (getvar "CMDECHO"))
   (setvar "OSMODE" 0) (setvar "CMDECHO" 0)
 
@@ -305,7 +318,7 @@ _LIBRARY = r"""
         (MTAP:setvars)
 
         ;; version + scale banner — confirms you're running the latest link file
-        (princ (strcat "\n=== MTAP build R19 ==="
+        (princ (strcat "\n=== MTAP build R20 ==="
                        "\n  block scales:  BT=" (rtos MTAP:SCALE_BT 2 2)
                        "  GDT=" (rtos MTAP:SCALE_GDT 2 2)
                        "  DAT=" (rtos MTAP:SCALE_DAT 2 2)
@@ -381,16 +394,17 @@ _LIBRARY = r"""
 
         ;; back taper — block on annot layer; Q-leader (red) with a real arrow.
         ;; Arrow at the flute start (shank-side body end); the leader TAIL goes to
-        ;; MTAP:BTINS — the back-taper block's OWN insertion point — so it always
-        ;; lands on that block (never the datum).  Draw it BEFORE the block so the
-        ;; block sits on top of the leader tail.
+        ;; the block's BOTTOM-RIGHT corner (computed from the block definition), so
+        ;; it lands on that block (never the datum).  Draw the leader BEFORE the
+        ;; block so the block sits on top of the leader tail.
         (if MTAP:HASBT
           (progn
             (setvar "CLAYER" "MTAP-DIM")   ; red leader
             (setvar "DIMASZ" MTAP:TXT)
+            (setq btbr (MTAP:block-br "MTAP_BACKTAPER" MTAP:BTINS MTAP:SCALE_BT))
             (vl-catch-all-apply
               (function (lambda ()
-                (command "_.LEADER" MTAP:BT_ARROW MTAP:BTINS "" "" "_None"))))
+                (command "_.LEADER" MTAP:BT_ARROW btbr "" "" "_None"))))
             (setvar "CLAYER" "MTAP-ANNOT")
             (setq blk (MTAP:ins-block "MTAP_BACKTAPER" MTAP:BTINS MTAP:SCALE_BT))
             (MTAP:set-attrib blk "VAL" MTAP:BTVAL)))
