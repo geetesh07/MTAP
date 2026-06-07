@@ -298,7 +298,7 @@ _LIBRARY = r"""
   (princ))
 
 ;; main draw
-(defun MTAP:draw ( / osm cme res blk)
+(defun MTAP:draw ( / osm cme res blk tb)
   (setq osm (getvar "OSMODE") cme (getvar "CMDECHO"))
   (setvar "OSMODE" 0) (setvar "CMDECHO" 0)
 
@@ -314,7 +314,7 @@ _LIBRARY = r"""
         (MTAP:setvars)
 
         ;; version + scale banner — confirms you're running the latest link file
-        (princ (strcat "\n=== MTAP build R15 ==="
+        (princ (strcat "\n=== MTAP build R16 ==="
                        "\n  block scales:  BT=" (rtos MTAP:SCALE_BT 2 2)
                        "  GDT=" (rtos MTAP:SCALE_GDT 2 2)
                        "  DAT=" (rtos MTAP:SCALE_DAT 2 2)
@@ -398,10 +398,17 @@ _LIBRARY = r"""
             (setvar "CLAYER" "MTAP-DIM")   ; red leader
             (MTAP:block-leader blk MTAP:BT_ARROW)))
 
-        ;; general note (yellow annotation layer)
-        (setvar "CLAYER" "MTAP-ANNOT")
-        (command "_.TEXT" "_Justify" "_Middle"
-                 MTAP:NOTEPT (* MTAP:TXT 0.9) 0 MTAP:NOTE)
+        ;; drawing title above the model (yellow annot layer) — only for a
+        ;; Blank-mode Drill blank.  Centered over the model, sat just above the
+        ;; current top extent (measured live so it never overlaps the blocks).
+        (if MTAP:HASTITLE
+          (progn
+            (setvar "CLAYER" "MTAP-ANNOT")
+            (setq tb (MTAP:range-bbox MTAP:TOOLSTART))
+            (if tb
+              (command "_.TEXT" "_Justify" "_Middle"
+                       (list MTAP:TITLECX (+ (cadr (cadr tb)) (* MTAP:TXT 2.0)))
+                       (* MTAP:TXT 2.0) 0 MTAP:TITLETEXT))))
 
         ;; ---- customer template: border + title block, scaled to wrap the
         ;; drawing and positioned so the tool is centered in the window ----
@@ -749,9 +756,15 @@ class LspWriter:
             a("(setq MTAP:BTINS nil MTAP:BTVAL nil MTAP:BT_ARROW nil)")
         a("")
 
-        # general note
-        a(f"(setq MTAP:NOTEPT {_pt(p.overall_length / 2.0, far - gap * 2.2)})")
-        a('(setq MTAP:NOTE "ALL DIMENSIONS IN MM")')
+        # drawing title above the model — shown ONLY for a Blank-mode Drill blank.
+        # (This writer is the Blank-mode writer; tool_type confirms the Drill part.)
+        is_drill_blank = str(p.tool_type).strip().lower() == "drill"
+        a(f"(setq MTAP:HASTITLE {_bool(is_drill_blank)})")
+        if is_drill_blank:
+            a(f"(setq MTAP:TITLECX {_num(p.overall_length / 2.0)})")
+            a(f"(setq MTAP:TITLETEXT {_lstr(p.tool_type.upper() + ' BLANK DRAWING')})")
+        else:
+            a("(setq MTAP:TITLECX nil MTAP:TITLETEXT nil)")
         a("")
 
         # auto-execute
