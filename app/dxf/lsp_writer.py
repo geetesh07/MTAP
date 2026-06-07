@@ -227,7 +227,7 @@ _LIBRARY = r"""
             ww  (- (car wmx) (car wmn))   wh  (- (cadr wmx) (cadr wmn))
             wcx (/ (+ (car wmn) (car wmx)) 2.0)
             wcy (/ (+ (cadr wmn) (cadr wmx)) 2.0)
-            margin 0.90)            ; tool fills up to 90% of the window
+            margin 0.70)            ; tool fills up to 70% of the window (breathing room)
       ;; scale template so the tool (incl. margin) fits in BOTH directions
       (setq s (max (/ tw (* ww margin)) (/ th (* wh margin))))
       ;; window-center(world) = IP + s*window-center(local)  =>  solve for IP
@@ -293,7 +293,7 @@ _LIBRARY = r"""
         (MTAP:setvars)
 
         ;; version + scale banner — confirms you're running the latest link file
-        (princ (strcat "\n=== MTAP build R9 ==="
+        (princ (strcat "\n=== MTAP build R10 ==="
                        "\n  block scales:  BT=" (rtos MTAP:SCALE_BT 2 2)
                        "  GDT=" (rtos MTAP:SCALE_GDT 2 2)
                        "  DAT=" (rtos MTAP:SCALE_DAT 2 2)
@@ -602,10 +602,21 @@ class LspWriter:
         # the measured angle is the acute cone angle, not its reflex.
         a(f"(setq MTAP:HASREINF {_bool(reinf)})")
         if reinf:
-            half  = math.radians(p.reinforcement_angle / 2.0)
+            # Place the dimension-arc label on the TRUE bisector of the two rays
+            # (vertex->E1 and vertex->E2).  The bisector always lies in the minor
+            # (<=180 deg) wedge, so DIMANGULAR reports the actual cone angle (30)
+            # instead of its reflex (330) regardless of whether the cone steps up
+            # or down.  Using a fixed +half-angle direction was the 330-deg bug.
             r_arc = max((x_ss - x_be) * 2.5, gap * 3.0)
-            ra_lx = x_be + r_arc * math.cos(half)
-            ra_ly = rc   + r_arc * math.sin(half)
+            d1x, d1y = (x_ss - x_be), (rc - rc)      # vertex -> E1 (axis dir)
+            d2x, d2y = (x_ss - x_be), (rs - rc)      # vertex -> E2 (cone edge)
+            n1 = math.hypot(d1x, d1y) or 1.0
+            n2 = math.hypot(d2x, d2y) or 1.0
+            bx = d1x / n1 + d2x / n2
+            by = d1y / n1 + d2y / n2
+            bn = math.hypot(bx, by) or 1.0
+            ra_lx = x_be + r_arc * bx / bn
+            ra_ly = rc   + r_arc * by / bn
             a(f"(setq MTAP:RA_VERT {_pt(x_be, rc)})")          # vertex: taper begin (body top)
             a(f"(setq MTAP:RA_E1   {_pt(x_ss, rc)})")          # ray 1: horizontal (axis dir)
             a(f"(setq MTAP:RA_E2   {_pt(x_ss, rs)})")          # ray 2: up the cone edge

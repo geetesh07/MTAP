@@ -385,7 +385,7 @@ class BlankDrawingScreen(QWidget):
                      os.path.getsize(AUTOCAD_LINK_PATH) if ok else 0)
             self.caption.setText("AutoCAD link ready → type DMTAP in AutoCAD")
             QMessageBox.information(
-                self, "MTAP — AutoCAD Link",
+                self, "MTAP by NTS — AutoCAD Link",
                 "The link is ready.\n\n"
                 "Switch to AutoCAD and type:  DMTAP\n\n"
                 "It will draw this tool at 1:1 scale.\n\n"
@@ -398,7 +398,7 @@ class BlankDrawingScreen(QWidget):
     def _report_error(self, title: str, exc: Exception) -> None:
         log.exception(title)
         QMessageBox.critical(
-            self, f"MTAP — {title}",
+            self, f"MTAP by NTS — {title}",
             f"{type(exc).__name__}: {exc}\n\n"
             f"{traceback.format_exc()}\n"
             f"This has also been written to logs/mtap.log",

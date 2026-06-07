@@ -122,7 +122,7 @@ class ModeSelectorScreen(QWidget):
 
         # Footer
         footer = QLabel(
-            "MTAP v0.1.0   ·   Blank Drawing active   ·   "
+            "MTAP by NTS  v0.1.0   ·   Blank Drawing active   ·   "
             "Proposal & Production in development   ·   MADE BY NTS"
         )
         footer.setObjectName("FooterNote")

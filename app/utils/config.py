@@ -1,7 +1,8 @@
 import os
 import sys
 
-APP_NAME = "MTAP"
+APP_NAME = "MTAP"            # internal id (paths, QSettings) — do NOT change
+APP_BRAND = "MTAP by NTS"    # user-facing brand shown across the UI
 APP_FULL_NAME = "Machine Tool Automation Program"
 APP_VERSION = "0.1.0"
 

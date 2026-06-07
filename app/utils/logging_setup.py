@@ -66,7 +66,7 @@ def setup_logging() -> str:
         try:
             from PyQt6.QtWidgets import QMessageBox
             QMessageBox.critical(
-                None, "MTAP — Unexpected Error",
+                None, "MTAP by NTS — Unexpected Error",
                 f"{exc_type.__name__}: {exc}\n\n"
                 f"Full details written to:\n{log_path}",
             )

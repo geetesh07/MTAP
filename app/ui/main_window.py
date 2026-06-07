@@ -12,13 +12,13 @@ from app.ui.blank_drawing_screen import BlankDrawingScreen
 from app.ui.proposal_screen import ProposalScreen
 from app.ui.production_screen import ProductionScreen
 from app.ui.logo import make_logo_pixmap
-from app.utils.config import APP_NAME, APP_FULL_NAME, APP_VERSION
+from app.utils.config import APP_NAME, APP_BRAND, APP_FULL_NAME, APP_VERSION
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(f"{APP_NAME} — {APP_FULL_NAME}")
+        self.setWindowTitle(f"{APP_BRAND} — {APP_FULL_NAME}")
         self.setMinimumSize(1200, 760)
         self._build_ui()
 
@@ -70,7 +70,7 @@ class MainWindow(QMainWindow):
         word_box.setContentsMargins(0, 0, 0, 0)
         word_box.setSpacing(0)
 
-        wordmark = QLabel(APP_NAME)
+        wordmark = QLabel(APP_BRAND)
         wordmark.setObjectName("AppLogo")
         wordmark.setFont(QFont("Segoe UI", 18, QFont.Weight.Bold))
 
