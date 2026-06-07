@@ -321,7 +321,7 @@ _LIBRARY = r"""
         (MTAP:setvars)
 
         ;; version + scale banner — confirms you're running the latest link file
-        (princ (strcat "\n=== MTAP build R22 ==="
+        (princ (strcat "\n=== MTAP build R23 ==="
                        "\n  block scales:  BT=" (rtos MTAP:SCALE_BT 2 2)
                        "  GDT=" (rtos MTAP:SCALE_GDT 2 2)
                        "  DAT=" (rtos MTAP:SCALE_DAT 2 2)
@@ -633,8 +633,11 @@ class LspWriter:
         a(f"(setq MTAP:HASCOOLANT {_bool(p.coolant)})")
         if p.coolant:
             amp  = min(rc, rs) * 0.5
-            cx0  = p.x_point_base
-            cx1  = p.x_end
+            # coolant enters at the back face and runs toward the tip, but STOPS
+            # after dipping 20% into the flute (from the flute's shank-side end at
+            # x_point_base + flute_length) — it must not reach the tip.
+            cx0  = p.x_point_base + 0.80 * p.flute_length   # 20% into the flute
+            cx1  = p.x_end                                  # back face (entry)
             span = max(cx1 - cx0, EPS)
             waves = max(1.0, min(span / (p.cutting_diameter * 8.0), 4.0))
             wl    = span / waves
