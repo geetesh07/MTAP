@@ -204,18 +204,20 @@ _LIBRARY = r"""
     (setq e (entnext e)))
   (if (and mn mx) (list mn mx) nil))
 
-;; World BOTTOM-RIGHT corner of block 'name' when inserted at 'ip' with scale 'sc'.
-;; Computed from the block DEFINITION's geometry extents (coords are relative to
-;; the block base point, which maps to 'ip'), so it never depends on a fragile
-;; inserted-instance bounding box.  bottom-right = (max_x, min_y) in local coords.
-(defun MTAP:block-br (name ip sc / be lmn lmx)
-  (setq be (MTAP:block-extents name))
-  (if be
+;; World BOTTOM-RIGHT corner (xmax, ymin) of an ALREADY-INSERTED entity, measured
+;; from its real bounding box in the drawing.  Independent of the block's base
+;; point or its definition — whatever you see on screen is what gets measured.
+;; Returns nil on failure.
+(defun MTAP:inst-br (e / lo hi)
+  (if (and e (not (vl-catch-all-error-p
+                    (vl-catch-all-apply
+                      (function (lambda ()
+                        (vla-getboundingbox (vlax-ename->vla-object e) 'lo 'hi)))))))
     (progn
-      (setq lmn (car be) lmx (cadr be))
-      (list (+ (car ip)  (* sc (car lmx)))     ; ip.x + sc * max_x
-            (+ (cadr ip) (* sc (cadr lmn)))))  ; ip.y + sc * min_y
-    ip))
+      (setq lo (vlax-safearray->list lo)
+            hi (vlax-safearray->list hi))
+      (list (car hi) (cadr lo)))   ; (max_x, min_y) = bottom-right
+    nil))
 
 ;; Insert MTAP_TEMPLATE scaled so its MTAP_WINDOW wraps the tool bbox with a
 ;; little margin, positioned so the WINDOW CENTER lands on the TOOL CENTER —
@@ -318,7 +320,7 @@ _LIBRARY = r"""
         (MTAP:setvars)
 
         ;; version + scale banner — confirms you're running the latest link file
-        (princ (strcat "\n=== MTAP build R20 ==="
+        (princ (strcat "\n=== MTAP build R21 ==="
                        "\n  block scales:  BT=" (rtos MTAP:SCALE_BT 2 2)
                        "  GDT=" (rtos MTAP:SCALE_GDT 2 2)
                        "  DAT=" (rtos MTAP:SCALE_DAT 2 2)
@@ -392,22 +394,25 @@ _LIBRARY = r"""
             (command "_.LINE" MTAP:GDT_LDR1 MTAP:GDT_LDR2 "")
             (MTAP:ins-block "MTAP_DATUM" MTAP:DATINS MTAP:SCALE_DAT)))
 
-        ;; back taper — block on annot layer; Q-leader (red) with a real arrow.
-        ;; Arrow at the flute start (shank-side body end); the leader TAIL goes to
-        ;; the block's BOTTOM-RIGHT corner (computed from the block definition), so
-        ;; it lands on that block (never the datum).  Draw the leader BEFORE the
-        ;; block so the block sits on top of the leader tail.
+        ;; back taper — insert the block first, then measure its REAL bounding box
+        ;; and run the Q-leader (red, real arrow) from the flute start to the
+        ;; block's BOTTOM-RIGHT corner.  Measuring the inserted instance means the
+        ;; corner is correct regardless of the block's base point.
         (if MTAP:HASBT
           (progn
-            (setvar "CLAYER" "MTAP-DIM")   ; red leader
-            (setvar "DIMASZ" MTAP:TXT)
-            (setq btbr (MTAP:block-br "MTAP_BACKTAPER" MTAP:BTINS MTAP:SCALE_BT))
-            (vl-catch-all-apply
-              (function (lambda ()
-                (command "_.LEADER" MTAP:BT_ARROW btbr "" "" "_None"))))
             (setvar "CLAYER" "MTAP-ANNOT")
             (setq blk (MTAP:ins-block "MTAP_BACKTAPER" MTAP:BTINS MTAP:SCALE_BT))
-            (MTAP:set-attrib blk "VAL" MTAP:BTVAL)))
+            (MTAP:set-attrib blk "VAL" MTAP:BTVAL)
+            (setq btbr (MTAP:inst-br blk))
+            (princ (strcat "\n  back-taper block bottom-right = "
+                           (if btbr (strcat "(" (rtos (car btbr) 2 2) ", "
+                                            (rtos (cadr btbr) 2 2) ")") "nil")))
+            (setvar "CLAYER" "MTAP-DIM")   ; red leader
+            (setvar "DIMASZ" MTAP:TXT)
+            (if btbr
+              (vl-catch-all-apply
+                (function (lambda ()
+                  (command "_.LEADER" MTAP:BT_ARROW btbr "" "" "_None")))))))
 
         ;; ---- customer template: border + title block, scaled to wrap the
         ;; drawing and positioned so the tool is centered in the window ----
