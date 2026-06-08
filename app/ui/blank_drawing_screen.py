@@ -5,7 +5,7 @@ from datetime import date
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QFrame,
     QPushButton, QLineEdit, QPlainTextEdit,
-    QScrollArea, QGroupBox, QSizePolicy, QMessageBox,
+    QScrollArea, QGroupBox, QSizePolicy, QMessageBox, QSplitter,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
@@ -13,7 +13,9 @@ from PyQt6.QtGui import QFont
 from app.engine.tools.drill import DrillBlankParams
 from app.dxf.lsp_writer import LspWriter
 from app.ui.widgets import YesNoToggle, NoScrollDoubleSpinBox, NoScrollComboBox
+from app.ui.preview_widget import BlankPreview
 from app.utils.config import AUTOCAD_LINK_DIR, AUTOCAD_LINK_PATH
+from app.utils.autocad_setup import install_startup
 from app.utils.logging_setup import get_logger
 
 log = get_logger()
@@ -82,7 +84,31 @@ class BlankDrawingScreen(QWidget):
         page.addStretch()
 
         scroll.setWidget(form)
-        root.addWidget(scroll, stretch=1)
+
+        # Live preview panel (right side)
+        preview_panel = QWidget()
+        preview_panel.setObjectName("RightPanel")
+        pv = QVBoxLayout(preview_panel)
+        pv.setContentsMargins(20, 22, 24, 22)
+        pv.setSpacing(12)
+        pv_header = QLabel("PREVIEW")
+        pv_header.setObjectName("SectionHeader")
+        pv.addWidget(pv_header)
+        self.preview = BlankPreview()
+        pv.addWidget(self.preview, stretch=1)
+        hint = QLabel("Live sketch — matches what DMTAP draws in AutoCAD")
+        hint.setObjectName("PreviewCaption")
+        pv.addWidget(hint)
+
+        # Inputs (left) | preview (right), resizable
+        body = QSplitter(Qt.Orientation.Horizontal)
+        body.setObjectName("Body")
+        body.addWidget(scroll)
+        body.addWidget(preview_panel)
+        body.setStretchFactor(0, 3)
+        body.setStretchFactor(1, 2)
+        body.setSizes([900, 560])
+        root.addWidget(body, stretch=1)
 
         # Action bar (fixed at bottom)
         root.addWidget(self._build_action_bar())
@@ -287,18 +313,37 @@ class BlankDrawingScreen(QWidget):
         divider.setFixedHeight(1)
         layout.addWidget(divider)
 
+        row = QHBoxLayout()
+        row.setSpacing(12)
+
+        # One-time AutoCAD setup: registers DMTAP so it auto-loads.
+        self.setup_btn = QPushButton("SET UP AUTOCAD")
+        self.setup_btn.setObjectName("SecondaryButton")
+        self.setup_btn.setFixedHeight(44)
+        self.setup_btn.clicked.connect(self._setup_autocad)
+        row.addWidget(self.setup_btn, stretch=0)
+
         # AutoCAD live link: writes the canonical link file that DMTAP reads.
         self.export_link_btn = QPushButton("AUTOCAD LINK")
         self.export_link_btn.setObjectName("PrimaryButton")
         self.export_link_btn.setFixedHeight(44)
         self.export_link_btn.clicked.connect(self._export_link)
-        layout.addWidget(self.export_link_btn)
+        row.addWidget(self.export_link_btn, stretch=1)
+        layout.addLayout(row)
 
         self.caption = QLabel("")
         self.caption.setObjectName("PreviewCaption")
         self.caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.caption)
         return bar
+
+    def _setup_autocad(self) -> None:
+        try:
+            paths, msg = install_startup()
+            log.info("AutoCAD setup wrote: %s", paths)
+            QMessageBox.information(self, "MTAP by NTS — AutoCAD Setup", msg)
+        except Exception as e:
+            self._report_error("AutoCAD setup failed", e)
 
     # ================================================================== logic
     def _collect_params(self) -> DrillBlankParams:
@@ -345,6 +390,9 @@ class BlankDrawingScreen(QWidget):
         p.derive()
         errors = p.validate()
         self._params = p
+
+        if hasattr(self, "preview"):
+            self.preview.set_params(p)
 
         self.read_point.setText("FLAT" if p.point_length < 1e-6 else f"{p.point_length:.3f} mm")
         self.read_reinf.setText(f"{p.reinforcement_length:.3f} mm")
