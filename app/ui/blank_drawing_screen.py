@@ -189,17 +189,19 @@ class BlankDrawingScreen(QWidget):
         self.point_spin = self._spin(140.0, 1.0, 180.0, decimals=1, step=1.0)
         grid.addWidget(self._field("Point angle", self.point_spin, "°"), 0, 0)
 
+        self.coolant_toggle = YesNoToggle(value=False)
+        grid.addWidget(self._field("Through coolant", self.coolant_toggle), 0, 1)
+
+        # Reinforcement toggle and its angle live on the SAME row: flip YES and the
+        # angle field appears right beside it (not off in another column).
         self.reinf_toggle = YesNoToggle(value=False)
         self.reinf_toggle.changed.connect(self._on_reinf_toggle)
-        grid.addWidget(self._field("Shank reinforcement", self.reinf_toggle), 0, 1)
+        grid.addWidget(self._field("Shank reinforcement", self.reinf_toggle), 1, 0)
 
         self.reinf_angle_spin = self._spin(30.0, 0.1, 89.9, decimals=1, step=1.0)
         self.reinf_angle_field = self._field("Reinf angle (from CL)", self.reinf_angle_spin, "°")
         self.reinf_angle_field.setVisible(False)
-        grid.addWidget(self.reinf_angle_field, 1, 0)
-
-        self.coolant_toggle = YesNoToggle(value=False)
-        grid.addWidget(self._field("Through coolant", self.coolant_toggle), 1, 1)
+        grid.addWidget(self.reinf_angle_field, 1, 1)
         return box
 
     def _group_annotations(self) -> QGroupBox:
@@ -215,9 +217,11 @@ class BlankDrawingScreen(QWidget):
         self.flute_auto = YesNoToggle(value=True)
         self.flute_auto.changed.connect(self._on_flute_auto_toggle)
         grid.addWidget(self._field("Auto flute length", self.flute_auto), 0, 0)
+        # Manual length only appears (same row) when Auto = NO
         self.flute_spin = self._spin(60.0, 0.0, 100000, step=1.0)
-        self.flute_spin.setEnabled(False)
-        grid.addWidget(self._field("Flute length", self.flute_spin, "mm"), 0, 1)
+        self.flute_field = self._field("Flute length", self.flute_spin, "mm")
+        self.flute_field.setVisible(False)
+        grid.addWidget(self.flute_field, 0, 1)
         return box
 
     def _group_details(self) -> QGroupBox:
@@ -331,6 +335,8 @@ class BlankDrawingScreen(QWidget):
         self._recompute()
 
     def _on_flute_auto_toggle(self, checked: bool) -> None:
+        # checked == auto -> hide manual field; NO -> show it in the same row
+        self.flute_field.setVisible(not checked)
         self.flute_spin.setEnabled(not checked)
         self._recompute()
 
