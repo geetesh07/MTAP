@@ -53,26 +53,32 @@ class BlankDrawingScreen(QWidget):
         header.setObjectName("SectionHeader")
         page.addWidget(header)
 
+        # Inputs in two balanced columns, ordered as you'd actually build the tool
         cols = QHBoxLayout()
-        cols.setSpacing(32)
+        cols.setSpacing(36)
 
         left = QVBoxLayout(); left.setSpacing(20)
         right = QVBoxLayout(); right.setSpacing(20)
 
+        # Left: define the part — what it is, its sizes, its shape
         left.addWidget(self._group_tool())
         left.addWidget(self._group_dimensions())
         left.addWidget(self._group_geometry())
-        left.addWidget(self._group_flute())
         left.addStretch()
 
+        # Right: how it's finished + the drawing's paperwork
+        right.addWidget(self._group_flute())
         right.addWidget(self._group_annotations())
         right.addWidget(self._group_details())
-        right.addWidget(self._group_derived())
         right.addStretch()
 
         cols.addLayout(left, 1)
         cols.addLayout(right, 1)
         page.addLayout(cols)
+
+        # Results: a full-width summary strip, just above the export button
+        page.addSpacing(4)
+        page.addWidget(self._group_derived())
         page.addStretch()
 
         scroll.setWidget(form)
@@ -237,15 +243,18 @@ class BlankDrawingScreen(QWidget):
 
     def _group_derived(self) -> QGroupBox:
         box, grid = self._card("DERIVED")
+        # four readouts across the full width
+        for c in range(4):
+            grid.setColumnStretch(c, 1)
         self.read_point = self._readout(grid, 0, 0, "Point length")
         self.read_reinf = self._readout(grid, 0, 1, "Reinforcement length")
-        self.read_body = self._readout(grid, 1, 0, "Body length")
-        self.read_flute = self._readout(grid, 1, 1, "Flute length")
+        self.read_body = self._readout(grid, 0, 2, "Body length")
+        self.read_flute = self._readout(grid, 0, 3, "Flute length")
 
         self.status_label = QLabel("")
         self.status_label.setObjectName("StatusOk")
         self.status_label.setWordWrap(True)
-        grid.addWidget(self.status_label, 2, 0, 1, 2)
+        grid.addWidget(self.status_label, 1, 0, 1, 4)
         return box
 
     def _readout(self, grid: QGridLayout, r: int, c: int, key: str) -> QLabel:
