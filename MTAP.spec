@@ -1,8 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
 # No ezdxf / matplotlib: the only deliverable is the AutoCAD DMTAP link.
-datas = [('app\\ui\\styles_dark.qss', 'app\\ui'), ('app\\ui\\styles_light.qss', 'app\\ui'), ('assets', 'assets')]
+datas = [
+    ('app\\ui\\styles_dark.qss',  'app\\ui'),
+    ('app\\ui\\styles_light.qss', 'app\\ui'),
+    ('assets',  'assets'),
+    ('nodejs',  'nodejs'),    # Node.js DXF generator + helper scripts
+]
 binaries = []
-hiddenimports = []
+hiddenimports = ['numpy', 'numpy.core', 'numpy.core._multiarray_umath']
 
 # Exclude heavy unused libs so they can't sneak into the bundle.
 excludes = ['ezdxf', 'matplotlib', 'cadquery', 'OCP', 'PIL']

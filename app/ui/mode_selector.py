@@ -102,7 +102,7 @@ class ModeSelectorScreen(QWidget):
                 "proposal",
                 "PROPOSAL\nDRAWING",
                 "Full to-scale tool drawing with helix projection. Customer approval document.",
-                False,
+                True,
             ),
             (
                 "production",
@@ -123,7 +123,7 @@ class ModeSelectorScreen(QWidget):
         # Footer
         footer = QLabel(
             "MTAP by NTS  v0.1.0   ·   Blank Drawing active   ·   "
-            "Proposal & Production in development   ·   MADE BY NTS"
+            "Proposal Drawing active   ·   Production in development   ·   MADE BY NTS"
         )
         footer.setObjectName("FooterNote")
         layout.addWidget(footer)

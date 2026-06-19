@@ -270,10 +270,81 @@ def _dedupe(pts: list[tuple[float, float]]) -> list[tuple[float, float]]:
 
 @dataclass
 class DrillProposalParams(BaseTool):
-    """Full proposal drawing parameters — defined when proposal mode is implemented."""
+    """
+    Parameters for a proposal drawing of a twist drill — fully fluted view.
+    Unlike the blank drawing (DrillBlankParams), this shows helix angle and flutes.
+    """
 
-    def validate(self) -> list[str]:
-        return ["Proposal parameters not yet defined."]
+    tool_type: str = "Drill"
+    cutting_diameter: float = 0.0        # Dc
+    shank_diameter: float = 0.0          # D  (0 = same as Dc)
+    overall_length: float = 0.0          # OAL
+    shank_length: float = 0.0            # Ls
+    point_angle: float = 118.0           # full included angle (deg)
+    helix_angle: float = 30.0            # helix angle (deg) — defines lead
+    n_flutes: int = 2                    # number of flutes (2, 3, 4)
+    flute_length_override: float | None = None
+
+    # derived
+    point_length:  float = field(default=0.0, init=False)
+    body_length:   float = field(default=0.0, init=False)
+    flute_length:  float = field(default=0.0, init=False)
+
+    @property
+    def x_point_base(self) -> float:
+        return self.point_length
+
+    @property
+    def x_body_end(self) -> float:
+        return self.point_length + self.body_length
+
+    @property
+    def x_shank_start(self) -> float:
+        return self.x_body_end    # no reinforcement zone in proposal mode
+
+    @property
+    def x_end(self) -> float:
+        return self.overall_length
+
+    @property
+    def effective_shank_diameter(self) -> float:
+        return self.shank_diameter if self.shank_diameter > EPS else self.cutting_diameter
 
     def derive(self) -> None:
-        pass
+        Dc = self.cutting_diameter
+        pa = self.point_angle
+        if pa >= 180.0 - EPS or pa <= EPS:
+            self.point_length = 0.0
+        else:
+            self.point_length = (Dc / 2.0) / math.tan(math.radians(pa / 2.0))
+
+        self.body_length = max(
+            0.0,
+            self.overall_length - self.point_length - self.shank_length,
+        )
+
+        if self.flute_length_override is None:
+            self.flute_length = self.body_length
+        else:
+            self.flute_length = min(max(self.flute_length_override, 0.0), self.body_length)
+
+    def validate(self) -> list[str]:
+        errors: list[str] = []
+        if self.cutting_diameter <= 0:
+            errors.append("Cutting diameter (Dc) must be > 0.")
+        if self.overall_length <= 0:
+            errors.append("Overall length (OAL) must be > 0.")
+        if self.shank_length <= 0:
+            errors.append("Shank length (Ls) must be > 0.")
+        if not (0 < self.point_angle <= 180):
+            errors.append("Point angle must be between 0° and 180°.")
+        if not (5 < self.helix_angle < 85):
+            errors.append("Helix angle must be between 5° and 85°.")
+        if self.n_flutes not in (2, 3, 4):
+            errors.append("Number of flutes must be 2, 3, or 4.")
+        if self.body_length < -EPS:
+            errors.append(
+                f"Point + shank exceed OAL by {-self.body_length:.3f} mm. "
+                "Increase OAL or reduce shank length."
+            )
+        return errors

@@ -64,10 +64,31 @@ def run_selftest() -> None:
         log.exception("selftest LINK failed")
         lines.append(f"LINK: FAIL {type(e).__name__}: {e}")
 
+    # Proposal DXF pipeline (Node.js + bundled opencascade.js)
+    try:
+        from app.engine.tools.drill import DrillProposalParams
+        from app.dxf.proposal_dxf import generate as gen_proposal, _SCRIPT
+        lines.append(f"cjs script: {_SCRIPT} exists={os.path.exists(_SCRIPT)}")
+        nm = os.path.join(os.path.dirname(_SCRIPT), "node_modules")
+        lines.append(f"node_modules bundled: {os.path.isdir(nm)}")
+
+        pp = DrillProposalParams(cutting_diameter=10, shank_diameter=10,
+                                 overall_length=100, shank_length=35,
+                                 point_angle=118, helix_angle=30, n_flutes=2)
+        pp.derive()
+        dxf_out = os.path.join(log_dir(), "selftest_proposal.dxf")
+        gen_proposal(pp, dxf_out)
+        dsize = os.path.getsize(dxf_out) if os.path.exists(dxf_out) else 0
+        lines.append(f"PROPOSAL DXF: {'OK' if dsize > 0 else 'EMPTY'} size={dsize}")
+    except Exception as e:
+        log.exception("selftest PROPOSAL failed")
+        lines.append(f"PROPOSAL DXF: FAIL {type(e).__name__}: {e}")
+
     text = "\n".join(lines)
     log.info("SELFTEST RESULT:\n%s", text)
     with open(os.path.join(log_dir(), "selftest_result.txt"), "w", encoding="utf-8") as fh:
         fh.write(text + "\n")
+    print(text)
 
 
 def main() -> None:
