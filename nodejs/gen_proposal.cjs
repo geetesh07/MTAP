@@ -426,15 +426,65 @@ function buildDxf(side, end) {
     `Drill  Dc${Dc}mm x OAL${OAL}mm  ${p.n_flutes || 2}-flute  ${p.helix_angle}deg helix  ${p.point_angle}deg point`
   );
 
-  // Inject $ACADVER so AutoCAD opens as editable, not read-only.
-  let raw = d.toDxfString();
-  const ver = '9\n$ACADVER\n  1\nAC1009\n';
-  if (raw.includes('  0\nSECTION\n  2\nHEADER\n')) {
-    raw = raw.replace('  0\nSECTION\n  2\nHEADER\n', '  0\nSECTION\n  2\nHEADER\n  ' + ver);
-  } else if (raw.includes('0\nSECTION\n2\nHEADER\n')) {
-    raw = raw.replace('0\nSECTION\n2\nHEADER\n', '0\nSECTION\n2\nHEADER\n' + ver);
+  // ── Overall drawing bounds (for extents + the initial view) ──
+  const allMinX = sideOx + side.minX;
+  const allMaxX = endOx + end.maxX;
+  const halfH   = Math.max(side.maxY - side.minY, end.maxY - end.minY) / 2;
+  const allMinY = (labelY - 7) - 4;     // a little below the spec text line
+  const allMaxY = halfH + 2;
+  const W  = Math.max(allMaxX - allMinX, 1);
+  const H  = Math.max(allMaxY - allMinY, 1);
+  const cx = (allMinX + allMaxX) / 2;
+  const cy = (allMinY + allMaxY) / 2;
+
+  // ── Header: a SINGLE $ACADVER (the duplicate is what made AutoCAD open
+  //    the file read-only), millimetre units, and real drawing extents so
+  //    the drawing isn't flung off-screen / zoomed to nothing on open. ──
+  d.header('ACADVER',  [[1, 'AC1021']]);                       // overwrite → no dup
+  d.header('INSUNITS', [[70, 4]]);                             // 4 = millimetres
+  d.header('EXTMIN',   [[10, allMinX], [20, allMinY], [30, 0]]);
+  d.header('EXTMAX',   [[10, allMaxX], [20, allMaxY], [30, 0]]);
+  d.header('LIMMIN',   [[10, allMinX], [20, allMinY]]);
+  d.header('LIMMAX',   [[10, allMaxX], [20, allMaxY]]);
+
+  // ── Frame the *ACTIVE viewport on the drawing (default is centred at the
+  //    origin with height 1000 → everything looks tiny). View height is sized
+  //    to cover the width on a typical widescreen without clipping. ──
+  const vpTable = d.tables['VPORT'];
+  if (vpTable && vpTable.elements && vpTable.elements.length) {
+    const vp = vpTable.elements[0];
+    vp.cx = cx; vp.cy = cy;
+    vp.viewH  = Math.max(H, W * 0.62) * 1.12;
+    vp.aspect = W / H;
+    vp.tags = function (manager) {
+      manager.push(0, 'VPORT');
+      manager.push(5, this.handle);
+      manager.push(330, this.ownerObjectHandle);
+      manager.push(100, 'AcDbSymbolTableRecord');
+      manager.push(100, 'AcDbViewportTableRecord');
+      manager.push(2, this.name);
+      manager.push(70, 0);
+      manager.push(10, 0.0); manager.push(20, 0.0);            // vp lower-left
+      manager.push(11, 1.0); manager.push(21, 1.0);            // vp upper-right
+      manager.push(12, this.cx); manager.push(22, this.cy);    // view centre (DCS)
+      manager.push(13, 0.0); manager.push(23, 0.0);            // snap base
+      manager.push(14, 10.0); manager.push(24, 10.0);          // snap spacing
+      manager.push(15, 10.0); manager.push(25, 10.0);          // grid spacing
+      manager.push(16, 0.0); manager.push(26, 0.0); manager.push(36, 1.0); // view dir
+      manager.push(17, 0.0); manager.push(27, 0.0); manager.push(37, 0.0); // target
+      manager.push(40, this.viewH);                            // view height (zoom)
+      manager.push(41, this.aspect);                           // aspect ratio
+      manager.push(42, 50.0);                                  // lens length
+      manager.push(43, 0.0); manager.push(44, 0.0);            // clip planes
+      manager.push(50, 0.0); manager.push(51, 0.0);            // snap/view twist
+      manager.push(71, 0); manager.push(72, 100);
+      manager.push(73, 1); manager.push(74, 3);
+      manager.push(75, 0); manager.push(76, 0);
+      manager.push(77, 0); manager.push(78, 0);
+    };
   }
-  return raw;
+
+  return d.toDxfString();
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
