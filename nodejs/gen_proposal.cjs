@@ -268,43 +268,165 @@ function toSegments(geo) {
   return segs;
 }
 
-// ─── Write DXF via dxf-writer ─────────────────────────────────────────────────
+// ─── B-rep edge extraction (port of occDrill.ts shapeToEdges) ────────────────
+// Pulls the model's real edges — outline, circles, AND helical flute edges —
+// as 3D line segments, independent of the surface mesh. Used for the end view.
 
-function buildDxf(segs) {
-  const d = new Drawing();
-  d.addLineType('CENTER', 'Center ____ _ ____ _', [12.7, -2.54, 2.54, -2.54]);
-  d.addLayer('Visible', 7, 'CONTINUOUS');
-  d.addLayer('Center',  1, 'CENTER');
-  d.addLayer('Text',    3, 'CONTINUOUS');
+function shapeToEdges(oc, shape) {
+  let lineType = null;
+  try { lineType = oc.GeomAbs_CurveType.GeomAbs_Line; } catch { lineType = null; }
 
-  // Compute bounds for centering and centreline
+  const seen = new Set();
+  const exp = new oc.TopExp_Explorer_2(
+    shape,
+    oc.TopAbs_ShapeEnum.TopAbs_EDGE,
+    oc.TopAbs_ShapeEnum.TopAbs_SHAPE
+  );
+
+  const edges = [];
+  let maxLen = 0;
+
+  for (; exp.More(); exp.Next()) {
+    try {
+      const edge = oc.TopoDS.Edge_1(exp.Current());
+      const ad   = new oc.BRepAdaptor_Curve_2(edge);
+      const f = ad.FirstParameter(), l = ad.LastParameter();
+      if (!isFinite(f) || !isFinite(l) || l - f <= 1e-9) continue;
+
+      let n = 48;
+      try { n = ad.GetType() === lineType ? 1 : 64; } catch { n = 48; }
+
+      const pts = [];
+      for (let k = 0; k <= n; k++) {
+        const t = f + ((l - f) * k) / n;
+        const pt = ad.Value(t);
+        pts.push([pt.X(), pt.Y(), pt.Z()]);
+      }
+
+      const a = pts[0], b = pts[pts.length - 1];
+      const key = [a, b].map(pp => pp.map(v => v.toFixed(2)).join(',')).sort().join('|');
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      let len = 0;
+      for (let k = 0; k + 1 < pts.length; k++) {
+        const dx = pts[k+1][0]-pts[k][0], dy = pts[k+1][1]-pts[k][1], dz = pts[k+1][2]-pts[k][2];
+        len += Math.hypot(dx, dy, dz);
+      }
+      edges.push({ pts, len });
+      if (len > maxLen) maxLen = len;
+    } catch { /* skip degenerate */ }
+  }
+
+  const positions = [];
+  const minLen = maxLen * 0.04;
+  for (const e of edges) {
+    if (e.len < minLen) continue;
+    const { pts } = e;
+    for (let k = 0; k + 1 < pts.length; k++) {
+      positions.push(pts[k][0], pts[k][1], pts[k][2], pts[k+1][0], pts[k+1][1], pts[k+1][2]);
+    }
+  }
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  return g;
+}
+
+// ─── Bounds helper ────────────────────────────────────────────────────────────
+
+function boundsOf(segs) {
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   for (const [x1, y1, x2, y2] of segs) {
     minX = Math.min(minX, x1, x2); maxX = Math.max(maxX, x1, x2);
     minY = Math.min(minY, y1, y2); maxY = Math.max(maxY, y1, y2);
   }
   if (!isFinite(minX)) { minX = maxX = minY = maxY = 0; }
+  return { segs, minX, maxX, minY, maxY };
+}
 
-  const ox  = -minX;
-  const oy  = -(minY + maxY) / 2;
-  const MIN = 0.1 * 0.1;
+// ─── End (front) view (port of occDxf.ts buildEndView) ───────────────────────
+// Looks down the drill axis (-Z). Keeps only the outer-diameter circle and the
+// tip-region edges (cutting lips + chisel), then projects to the XY plane.
 
-  d.setActiveLayer('Visible');
-  for (const [x1, y1, x2, y2] of segs) {
-    const dx = x2-x1, dy = y2-y1;
-    if (dx*dx + dy*dy < MIN) continue;
-    d.drawLine(ox+x1, oy+y1, ox+x2, oy+y2);
+function buildEndView(oc, shape, rBody, totalLen) {
+  const tipZStart = totalLen * 0.80;
+  const rTol      = rBody * 0.06;
+
+  const geo = shapeToEdges(oc, shape);
+  const pos = geo.getAttribute('position');
+  const segs = [];
+  if (!pos) return boundsOf(segs);
+
+  for (let i = 0; i + 1 < pos.count; i += 2) {
+    const x1 = pos.getX(i),   y1 = pos.getY(i),   z1 = pos.getZ(i);
+    const x2 = pos.getX(i+1), y2 = pos.getY(i+1), z2 = pos.getZ(i+1);
+    if (![x1,y1,z1,x2,y2,z2].every(v => isFinite(v) && !isNaN(v))) continue;
+
+    const midZ = (z1 + z2) / 2;
+    const midR = (Math.hypot(x1, y1) + Math.hypot(x2, y2)) / 2;
+
+    const isOuterCircle = Math.abs(midR - rBody) < rTol;
+    const isTipRegion   = midZ > tipZStart;
+    if (!isOuterCircle && !isTipRegion) continue;
+
+    const dx = x2 - x1, dy = y2 - y1;
+    if (dx * dx + dy * dy < 0.01) continue;   // drop near-zero XY projection
+    segs.push([x1, y1, x2, y2]);
   }
 
+  return boundsOf(segs);
+}
+
+// ─── Write DXF with both side + end views (port of occDxf.ts layout) ─────────
+
+function buildDxf(side, end) {
+  const d = new Drawing();
+  d.addLineType('CENTER', 'Center ____ _ ____ _', [12.7, -2.54, 2.54, -2.54]);
+  d.addLayer('Visible', 7, 'CONTINUOUS');
+  d.addLayer('Center',  1, 'CENTER');
+  d.addLayer('Text',    3, 'CONTINUOUS');
+
+  const MIN = 0.1 * 0.1;
+  const draw = (segs, ox, oy) => {
+    for (const [x1, y1, x2, y2] of segs) {
+      const dx = x2 - x1, dy = y2 - y1;
+      if (dx * dx + dy * dy < MIN) continue;
+      d.drawLine(ox + x1, oy + y1, ox + x2, oy + y2);
+    }
+  };
+
+  // Layout: side view at origin, end view to its right with a gap.
+  const sideOx = -side.minX;
+  const sideOy = -(side.minY + side.maxY) / 2;
+  const gap    = Math.max(20, (end.maxX - end.minX) * 0.4);
+  const endOx  = sideOx + side.maxX + gap - end.minX;
+  const endOy  = -(end.minY + end.maxY) / 2;
+
+  d.setActiveLayer('Visible');
+  draw(side.segs, sideOx, sideOy);
+  draw(end.segs,  endOx,  endOy);
+
   d.setActiveLayer('Center');
-  d.drawLine(ox+minX - 6, 0, ox+maxX + 6, 0);
+  // Side-view axis centreline
+  d.drawLine(sideOx + side.minX - 6, 0, sideOx + side.maxX + 6, 0);
+  // End-view crosshair
+  const endR  = Math.max(end.maxX - end.minX, end.maxY - end.minY) / 2 + 6;
+  const endCx = endOx + (end.minX + end.maxX) / 2;
+  d.drawLine(endCx - endR, 0, endCx + endR, 0);
+  d.drawLine(endCx, -endR, endCx, endR);
 
   d.setActiveLayer('Text');
-  const Dc  = p.cutting_diameter, OAL = p.overall_length;
-  const lbl = `PROPOSAL  Dc${Dc}mm x OAL${OAL}mm  ${p.n_flutes || 2}-flute  ${p.helix_angle}deg helix  ${p.point_angle}deg point`;
-  d.drawText(ox + minX, oy + minY - 8, 3.5, 0, lbl);
+  const labelY = Math.min(sideOy + side.minY, endOy + end.minY) - 8;
+  d.drawText(sideOx + side.minX, labelY, 4, 0, 'SIDE VIEW');
+  d.drawText(endOx + end.minX,   labelY, 4, 0, 'END VIEW');
+  const Dc = p.cutting_diameter, OAL = p.overall_length;
+  d.drawText(
+    sideOx + side.minX, labelY - 7, 3, 0,
+    `Drill  Dc${Dc}mm x OAL${OAL}mm  ${p.n_flutes || 2}-flute  ${p.helix_angle}deg helix  ${p.point_angle}deg point`
+  );
 
-  // Inject $ACADVER so AutoCAD opens as editable
+  // Inject $ACADVER so AutoCAD opens as editable, not read-only.
   let raw = d.toDxfString();
   const ver = '9\n$ACADVER\n  1\nAC1009\n';
   if (raw.includes('  0\nSECTION\n  2\nHEADER\n')) {
@@ -333,13 +455,18 @@ function buildDxf(segs) {
   process.stderr.write('[3/5] Solid built — tessellating…\n');
 
   const geo = shapeToGeometry(oc, shape);
-  process.stderr.write('[4/5] Mesh ready — projecting side view…\n');
+  process.stderr.write('[4/6] Mesh ready — projecting side view…\n');
 
-  const visGeo = projectSideView(geo);
-  const segs   = toSegments(visGeo);
-  process.stderr.write(`[5/5] ${segs.length} segments — writing DXF…\n`);
+  const visGeo  = projectSideView(geo);
+  const side    = boundsOf(toSegments(visGeo));
+  process.stderr.write(`[5/6] side: ${side.segs.length} segments — building end view…\n`);
 
-  const dxf = buildDxf(segs);
+  const rBody    = Math.max(p.cutting_diameter, 0.1) / 2;
+  const totalLen = p.overall_length;
+  const end      = buildEndView(oc, shape, rBody, totalLen);
+  process.stderr.write(`[6/6] end: ${end.segs.length} segments — writing DXF…\n`);
+
+  const dxf = buildDxf(side, end);
   fs.mkdirSync(path.dirname(path.resolve(outPath)), { recursive: true });
   fs.writeFileSync(outPath, dxf, 'utf8');
   process.stdout.write(outPath + '\n');
