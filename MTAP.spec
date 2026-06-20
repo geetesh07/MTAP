@@ -1,15 +1,26 @@
 # -*- mode: python ; coding: utf-8 -*-
-# No ezdxf / matplotlib: the only deliverable is the AutoCAD DMTAP link.
 datas = [
     ('app\\ui\\styles_dark.qss',  'app\\ui'),
     ('app\\ui\\styles_light.qss', 'app\\ui'),
     ('assets',  'assets'),
+    # Proposal Drawing: Node.js projection script + three-edge-projection packages
+    ('nodejs', 'nodejs'),
 ]
 binaries = []
-hiddenimports = ['numpy', 'numpy.core', 'numpy.core._multiarray_umath']
+hiddenimports = [
+    'numpy', 'numpy.core', 'numpy.core._multiarray_umath',
+    # OCP modules used by proposal_dxf
+    'OCP.gp', 'OCP.BRepPrimAPI', 'OCP.BRepAlgoAPI',
+    'OCP.BRepBuilderAPI', 'OCP.BRepOffsetAPI', 'OCP.BRepMesh',
+    'OCP.BRep', 'OCP.TopLoc', 'OCP.GeomAPI', 'OCP.TColgp',
+    'OCP.TopExp', 'OCP.TopAbs', 'OCP.TopoDS', 'OCP.GC',
+    # ezdxf
+    'ezdxf', 'ezdxf.entities', 'ezdxf.layouts', 'ezdxf.sections',
+    'ezdxf.document', 'ezdxf.lldxf',
+]
 
-# Exclude heavy unused libs so they can't sneak into the bundle.
-excludes = ['ezdxf', 'matplotlib', 'cadquery', 'OCP', 'PIL']
+# cadquery high-level API and matplotlib still excluded (not used).
+excludes = ['matplotlib', 'cadquery', 'PIL']
 
 
 a = Analysis(
