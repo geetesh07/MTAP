@@ -254,6 +254,14 @@ class ProposalScreen(QWidget):
             if reply == QMessageBox.StandardButton.Yes:
                 os.startfile(path)
 
+        except PermissionError as e:
+            log.error("Proposal DXF permission error: %s", e)
+            self._status.setText("Permission denied — close the file in AutoCAD first.")
+            QMessageBox.warning(
+                self, "File in Use",
+                f"Cannot save — the file is open in another application (AutoCAD).\n\n"
+                f"Close the DXF in AutoCAD, then click Generate again.\n\n{e}",
+            )
         except Exception:
             tb = traceback.format_exc()
             log.error("Proposal DXF failed:\n%s", tb)
