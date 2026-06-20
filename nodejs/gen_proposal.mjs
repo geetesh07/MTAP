@@ -2,18 +2,17 @@
  * gen_proposal.mjs
  * Usage: node gen_proposal.mjs <mesh.json> <segments.json>
  *
- * Reads a tessellated drill mesh (flat float vertex + int index arrays),
- * projects along Y with three-edge-projection (ProjectionGenerator),
- * and writes visible edge segments as JSON: [[z1,x1,z2,x2], ...]
+ * Produces two projected views of the drill:
+ *   side  — project along world Y (classic side view, drill horizontal)
+ *   front — project along world Z (end view from tip, shows cutting face)
  *
- * Coordinate convention (matches Python OCC build):
- *   Drill axis  = world Z (tip at 0, shank at OAL)
- *   Projection  = along world Y  →  visible plane is XZ
- *   DXF output  = X:axial(Z)  Y:radial(X)
+ * Output JSON: { side: [[z1,x1,z2,x2],...], front: [[x1,y1,x2,y2],...] }
+ * where for side:  z=axial, x=radial
+ * and  for front:  x=radial-X, y=radial-Y (circle of cutting diameter)
  */
 
 import { readFileSync, writeFileSync } from 'fs';
-import { BufferGeometry, Float32BufferAttribute, Mesh } from 'three';
+import { BufferGeometry, Float32BufferAttribute, Mesh, Matrix4 } from 'three';
 import { MeshBVH } from 'three-mesh-bvh';
 import { ProjectionGenerator } from 'three-edge-projection';
 
@@ -25,40 +24,58 @@ if (!meshPath || !outPath) {
 
 const { v, i } = JSON.parse(readFileSync(meshPath, 'utf8'));
 
-// Build BufferGeometry
-const geometry = new BufferGeometry();
-geometry.setAttribute('position', new Float32BufferAttribute(new Float32Array(v), 3));
-geometry.setIndex(i);
-geometry.computeVertexNormals();
-geometry.boundsTree = new MeshBVH(geometry);
-
-const mesh = new Mesh(geometry);
-
-// Run projection synchronously (iterationTime=Infinity means it never yields mid-batch)
-const gen = new ProjectionGenerator();
-gen.iterationTime = Infinity;
-
-const task = gen.generate(mesh);
-let step = { done: false };
-while (!step.done) {
-    step = task.next();
+function buildGeometry(verts, indices, rotMat) {
+    const geom = new BufferGeometry();
+    const pos = new Float32Array(verts);
+    geom.setAttribute('position', new Float32BufferAttribute(pos, 3));
+    geom.setIndex(indices);
+    if (rotMat) geom.applyMatrix4(rotMat);
+    geom.computeVertexNormals();
+    geom.boundsTree = new MeshBVH(geom);
+    return geom;
 }
-const result = step.value;   // ProjectionResult { visibleEdges, hiddenEdges }
 
-// Extract line segments from visible edges
-// getLineGeometry() returns BufferGeometry with positions: [x1,0,z1, x2,0,z2, ...]
-const lineGeom = result.visibleEdges.getLineGeometry();
-const pos = lineGeom.attributes.position.array;
+function project(geometry) {
+    const mesh = new Mesh(geometry);
+    const gen = new ProjectionGenerator();
+    gen.iterationTime = Infinity;
+    const task = gen.generate(mesh);
+    let step = { done: false };
+    while (!step.done) step = task.next();
+    return step.value.visibleEdges.getLineGeometry();
+}
 
-const segs = [];
-for (let k = 0; k < pos.length; k += 6) {
-    const x1 = pos[k],   z1 = pos[k+2];
-    const x2 = pos[k+3], z2 = pos[k+5];
-    // Skip degenerate zero-length segments
-    if (Math.abs(x2-x1) > 1e-6 || Math.abs(z2-z1) > 1e-6) {
-        segs.push([z1, x1, z2, x2]);   // [axial1, radial1, axial2, radial2]
+function extractSegs(lineGeom) {
+    const pos = lineGeom.attributes.position.array;
+    const segs = [];
+    for (let k = 0; k < pos.length; k += 6) {
+        const ax = pos[k],   az = pos[k+2];
+        const bx = pos[k+3], bz = pos[k+5];
+        if (Math.abs(bx-ax) > 1e-6 || Math.abs(bz-az) > 1e-6)
+            segs.push([ax, az, bx, bz]);
     }
+    return segs;
 }
 
-writeFileSync(outPath, JSON.stringify(segs));
-console.log(`${segs.length} segments`);
+// ── Side view: project along +Y ──────────────────────────────────────────────
+// Drill axis = Z. ProjectionGenerator looks along +Y.
+// Output: (x, 0, z) → DXF (z=axial, x=radial)  ← handled in Python
+const sideGeom = buildGeometry(v, i, null);
+const sideLine = project(sideGeom);
+// segs: [x1, z1, x2, z2] (raw from projection; Python swaps to [z1,x1,z2,x2])
+const sideSegs = extractSegs(sideLine);
+
+// ── Front view: project along +Z (tip → shank direction) ─────────────────────
+// Rotate mesh by Rx(-90°): [x,y,z] → [x, z, -y]
+// After rotation: original +Z maps to +Y  →  ProjectionGenerator sees drill end-on
+// Output: (x', 0, z') where x'=orig_X, z'=-orig_Y
+// DXF: (x', -z') = (orig_X, orig_Y)  ← circle of cutting diameter
+const rotFront = new Matrix4().makeRotationX(-Math.PI / 2);
+const frontGeom = buildGeometry(v, i, rotFront);
+const frontLine = project(frontGeom);
+const frontRaw  = extractSegs(frontLine);
+// Convert to (orig_X, orig_Y): x' stays, y = -z'
+const frontSegs = frontRaw.map(([x1, z1, x2, z2]) => [x1, -z1, x2, -z2]);
+
+writeFileSync(outPath, JSON.stringify({ side: sideSegs, front: frontSegs }));
+console.log(`side: ${sideSegs.length}  front: ${frontSegs.length}`);

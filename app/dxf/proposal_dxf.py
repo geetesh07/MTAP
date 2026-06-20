@@ -2,11 +2,14 @@
 proposal_dxf.py — Proposal Drawing DXF generator.
 
 Pipeline:
-  1. Build drill solid via OCC boolean cuts (same as always)
-  2. Tessellate the solid to a triangle mesh JSON
-  3. Call nodejs/gen_proposal.mjs  →  three-edge-projection (ProjectionGenerator)
-     projects along the Y axis and returns visible edge segments
-  4. Write those segments to DXF with ezdxf
+  1. Build drill solid via OCC boolean cuts
+     - Body at cutting diameter, shank section at shank diameter
+     - Helical pipe-sweep flute cuts
+  2. Tessellate solid to triangle mesh JSON
+  3. Call nodejs/gen_proposal.mjs → ProjectionGenerator (three-edge-projection)
+     Side view:  project along Y   → drill horizontal, tip left
+     Front view: project along Z   → end-on view of cutting face
+  4. Write both views to DXF with ezdxf
 """
 
 import json
@@ -37,10 +40,9 @@ from app.utils.config import resource_path
 
 _HELIX_PTS_PER_TURN = 120
 _FLUTE_RADIUS_FRAC  = 0.38
-_MESH_DEFLECTION    = 0.05   # mm; smaller = finer mesh, slower tessellation
+_MESH_DEFLECTION    = 0.05   # mm — smaller = finer mesh
 
 def _node_script() -> str:
-    """Return absolute path to gen_proposal.mjs — works in dev and frozen exe."""
     return resource_path(os.path.join("nodejs", "gen_proposal.mjs"))
 
 
@@ -76,11 +78,22 @@ def _disk_profile(center, normal_dir, radius):
 def _build_solid(Dc, shank_dia, point_length, body_length, shank_length,
                  helix_angle, n_flutes):
     rc = Dc / 2.0
+    rs = shank_dia / 2.0
 
+    # Body cylinder — cutting diameter section
     body_ax = gp_Ax2(gp_Pnt(0, 0, point_length), gp_Dir(0, 0, 1))
-    solid   = BRepPrimAPI_MakeCylinder(body_ax, rc,
-                                       body_length + shank_length).Shape()
+    solid   = BRepPrimAPI_MakeCylinder(body_ax, rc, body_length).Shape()
 
+    # Shank cylinder — fused separately so shank_dia is respected
+    if shank_length > 1e-6:
+        shank_ax  = gp_Ax2(gp_Pnt(0, 0, point_length + body_length),
+                            gp_Dir(0, 0, 1))
+        shank_cyl = BRepPrimAPI_MakeCylinder(shank_ax, rs, shank_length).Shape()
+        fuse = BRepAlgoAPI_Fuse(solid, shank_cyl)
+        fuse.Build()
+        solid = fuse.Shape()
+
+    # Tip cone
     if point_length > 1e-6:
         tip_ax = gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1))
         tip    = BRepPrimAPI_MakeCone(tip_ax, 0.0, rc, point_length).Shape()
@@ -88,6 +101,7 @@ def _build_solid(Dc, shank_dia, point_length, body_length, shank_length,
         fuse.Build()
         solid  = fuse.Shape()
 
+    # Helical flute cuts — only through body section
     flute_r = rc * _FLUTE_RADIUS_FRAC
     helix_r = rc
     for i in range(n_flutes):
@@ -123,12 +137,11 @@ def _build_solid(Dc, shank_dia, point_length, body_length, shank_length,
 
 # ──────────────────────────────────────────────────────── mesh export ──
 
-def _tessellate(shape):
-    """Return {'v': [x,y,z,...], 'i': [a,b,c,...]} flat arrays."""
+def _tessellate(shape) -> dict:
     BRepMesh_IncrementalMesh(shape, _MESH_DEFLECTION).Perform()
 
-    verts = []
-    idxs  = []
+    verts  = []
+    idxs   = []
     offset = 0
 
     exp = TopExp_Explorer(shape, TopAbs_FACE)
@@ -163,9 +176,12 @@ def _tessellate(shape):
 
 # ──────────────────────────────────────────────────────── Node.js projection ──
 
-def _project_via_nodejs(mesh_data: dict) -> list:
+def _project_via_nodejs(mesh_data: dict) -> dict:
     """
-    Call gen_proposal.mjs; returns list of (x1,y1,x2,y2) DXF line segments.
+    Run gen_proposal.mjs.
+    Returns {'side': [[z1,x1,z2,x2],...], 'front': [[x1,y1,x2,y2],...]}
+    (coordinates already in DXF space — side: axial=X, radial=Y;
+     front: radial_X=X, radial_Y=Y centred at 0,0)
     """
     script = os.path.normpath(_node_script())
 
@@ -179,16 +195,15 @@ def _project_via_nodejs(mesh_data: dict) -> list:
     try:
         result = subprocess.run(
             ['node', script, mesh_path, seg_path],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True, text=True, timeout=180,
         )
         if result.returncode != 0:
             raise RuntimeError(
                 f"gen_proposal.mjs failed (exit {result.returncode}):\n"
                 f"{result.stderr.strip()}"
             )
-
         with open(seg_path, 'r', encoding='utf-8') as sf:
-            segs = json.load(sf)   # [[z1,x1,z2,x2], ...]
+            raw = json.load(sf)   # { side: [...], front: [...] }
     finally:
         for p in (mesh_path, seg_path):
             try:
@@ -196,7 +211,13 @@ def _project_via_nodejs(mesh_data: dict) -> list:
             except OSError:
                 pass
 
-    return segs
+    # Side view raw from Node: [x1, z1, x2, z2]
+    # ProjectionGenerator looks along Y → output (x, 0, z)
+    # DXF side view: X = world-Z (axial), Y = world-X (radial)  → swap
+    side  = [( z1, x1, z2, x2) for (x1, z1, x2, z2) in raw['side']]
+    front = raw['front']   # already (orig_X, orig_Y) — circle in XY plane
+
+    return {'side': side, 'front': front}
 
 
 # ──────────────────────────────────────────────────────── public entry point ──
@@ -209,7 +230,7 @@ def generate(params: DrillProposalParams, out_path: str) -> None:
     p  = params
     rc = p.cutting_diameter / 2.0
 
-    solid = _build_solid(
+    solid     = _build_solid(
         Dc           = p.cutting_diameter,
         shank_dia    = p.effective_shank_diameter,
         point_length = p.point_length,
@@ -218,18 +239,36 @@ def generate(params: DrillProposalParams, out_path: str) -> None:
         helix_angle  = p.helix_angle,
         n_flutes     = p.n_flutes,
     )
-
     mesh_data = _tessellate(solid)
-    segs      = _project_via_nodejs(mesh_data)   # [[z1,x1,z2,x2], ...]
+    views     = _project_via_nodejs(mesh_data)
+
+    side_segs  = views['side']    # [(z1, x1, z2, x2), ...]  axial=X, radial=Y
+    front_segs = views['front']   # [(x1, y1, x2, y2), ...]  centred at (0,0)
+
+    # Front view is placed to the right of the side view:
+    #   side  spans DXF X = [0 … OAL]
+    #   gap   = rc * 2
+    #   front centred at DXF X = OAL + gap
+    front_cx = p.overall_length + rc * 2
 
     doc = ezdxf.new("R2010")
     msp = doc.modelspace()
 
     all_x, all_y = [], []
-    for z1, x1, z2, x2 in segs:
-        msp.add_line((z1, x1), (z2, x2), dxfattribs={"layer": "0"})
+
+    # Side view
+    for z1, x1, z2, x2 in side_segs:
+        msp.add_line((z1, x1), (z2, x2), dxfattribs={"layer": "SIDE"})
         all_x += [z1, z2]
         all_y += [x1, x2]
+
+    # Front / end view
+    for x1, y1, x2, y2 in front_segs:
+        fx1, fy1 = x1 + front_cx, y1
+        fx2, fy2 = x2 + front_cx, y2
+        msp.add_line((fx1, fy1), (fx2, fy2), dxfattribs={"layer": "FRONT"})
+        all_x += [fx1, fx2]
+        all_y += [fy1, fy2]
 
     if all_x:
         pad = rc * 0.15
