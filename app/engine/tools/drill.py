@@ -285,10 +285,25 @@ class DrillProposalParams(BaseTool):
     n_flutes: int = 2                    # number of flutes (2, 3, 4)
     flute_length_override: float | None = None
 
+    reinforcement: bool = False          # True = conical neck transition Dc->D
+    reinforcement_angle: float = 30.0    # half-angle from centerline (deg)
+    runout: float = 0.010                # GD&T circular runout on Dc (0 = none)
+
     # derived
-    point_length:  float = field(default=0.0, init=False)
-    body_length:   float = field(default=0.0, init=False)
-    flute_length:  float = field(default=0.0, init=False)
+    point_length:         float = field(default=0.0, init=False)
+    reinforcement_length: float = field(default=0.0, init=False)
+    body_length:          float = field(default=0.0, init=False)
+    flute_length:         float = field(default=0.0, init=False)
+
+    # ----------------------------------------------------------------- helpers
+    @property
+    def diameters_differ(self) -> bool:
+        return abs(self.effective_shank_diameter - self.cutting_diameter) > EPS
+
+    @property
+    def has_transition_cone(self) -> bool:
+        """A reinforcement cone is drawn only when enabled AND diameters differ."""
+        return self.reinforcement and self.diameters_differ
 
     @property
     def x_point_base(self) -> float:
@@ -300,7 +315,7 @@ class DrillProposalParams(BaseTool):
 
     @property
     def x_shank_start(self) -> float:
-        return self.x_body_end    # no reinforcement zone in proposal mode
+        return self.x_body_end + self.reinforcement_length
 
     @property
     def x_end(self) -> float:
@@ -312,15 +327,26 @@ class DrillProposalParams(BaseTool):
 
     def derive(self) -> None:
         Dc = self.cutting_diameter
+        D  = self.effective_shank_diameter
         pa = self.point_angle
         if pa >= 180.0 - EPS or pa <= EPS:
             self.point_length = 0.0
         else:
             self.point_length = (Dc / 2.0) / math.tan(math.radians(pa / 2.0))
 
+        # Reinforcement (transition) cone axial length — angle measured FROM the
+        # centerline, so tan(angle) = radial_drop / axial_length.
+        if self.has_transition_cone and 0.0 < self.reinforcement_angle < 90.0:
+            radial_drop = abs(D - Dc) / 2.0
+            self.reinforcement_length = radial_drop / math.tan(
+                math.radians(self.reinforcement_angle))
+        else:
+            self.reinforcement_length = 0.0
+
         self.body_length = max(
             0.0,
-            self.overall_length - self.point_length - self.shank_length,
+            self.overall_length - self.point_length
+            - self.reinforcement_length - self.shank_length,
         )
 
         if self.flute_length_override is None:
@@ -342,9 +368,11 @@ class DrillProposalParams(BaseTool):
             errors.append("Helix angle must be between 5° and 85°.")
         if self.n_flutes not in (2, 3, 4):
             errors.append("Number of flutes must be 2, 3, or 4.")
+        if self.has_transition_cone and not (0 < self.reinforcement_angle < 90):
+            errors.append("Reinforcement angle must be between 0° and 90° (from centerline).")
         if self.body_length < -EPS:
             errors.append(
-                f"Point + shank exceed OAL by {-self.body_length:.3f} mm. "
-                "Increase OAL or reduce shank length."
+                f"Point + reinforcement + shank exceed OAL by {-self.body_length:.3f} mm. "
+                "Increase OAL or reduce shank/reinforcement."
             )
         return errors

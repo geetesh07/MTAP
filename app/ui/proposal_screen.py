@@ -6,7 +6,7 @@ import traceback
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QPushButton,
     QFileDialog, QMessageBox, QScrollArea, QGroupBox, QGridLayout,
-    QSizePolicy,
+    QSizePolicy, QCheckBox,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
@@ -134,8 +134,21 @@ class ProposalScreen(QWidget):
         grid.setHorizontalSpacing(16)
 
         self._pa = self._spin(60.0, 160.0, 118.0, 1, "°")
-        grid.addWidget(QLabel("Point Angle"), 0, 0)
-        grid.addWidget(self._pa, 0, 1)
+        self._reinf = QCheckBox("Reinforcement (conical neck)")
+        self._ra = self._spin(5.0, 89.0, 30.0, 1, "°")
+        self._runout = self._spin(0.0, 1.0, 0.010, 3, " mm")
+
+        # reinforcement angle only meaningful when reinforcement is on
+        self._reinf.toggled.connect(self._ra.setEnabled)
+        self._ra.setEnabled(self._reinf.isChecked())
+
+        grid.addWidget(QLabel("Point Angle"),     0, 0)
+        grid.addWidget(self._pa,                  0, 1)
+        grid.addWidget(self._reinf,               1, 0, 1, 2)
+        grid.addWidget(QLabel("Reinf. Angle"),    2, 0)
+        grid.addWidget(self._ra,                  2, 1)
+        grid.addWidget(QLabel("Runout (GD&T)"),   3, 0)
+        grid.addWidget(self._runout,              3, 1)
         return g
 
     def _group_flute(self) -> QGroupBox:
@@ -162,9 +175,10 @@ class ProposalScreen(QWidget):
         lo = QVBoxLayout(g)
 
         lbl = QLabel(
-            "Generates a proposal DXF using pre-drawn\n"
-            "helix blocks scaled to the tool dimensions.\n\n"
-            "Implementation in progress."
+            "Generates a production proposal DXF: a real 3D solid is built and\n"
+            "projected to clean side + end views (edge projection), with\n"
+            "centerlines, dimensions, GD&T runout, and a title block.\n\n"
+            "Requires Node.js installed on this machine."
         )
         lbl.setObjectName("PlaceholderSubText")
         lbl.setWordWrap(True)
@@ -207,13 +221,16 @@ class ProposalScreen(QWidget):
 
     def _read_params(self) -> DrillProposalParams:
         p = DrillProposalParams(
-            cutting_diameter = self._dc.value(),
-            shank_diameter   = self._d.value(),
-            overall_length   = self._oal.value(),
-            shank_length     = self._ls.value(),
-            point_angle      = self._pa.value(),
-            helix_angle      = self._helix.value(),
-            n_flutes         = int(self._nflutes.currentText().split()[0]),
+            cutting_diameter    = self._dc.value(),
+            shank_diameter      = self._d.value(),
+            overall_length      = self._oal.value(),
+            shank_length        = self._ls.value(),
+            point_angle         = self._pa.value(),
+            helix_angle         = self._helix.value(),
+            n_flutes            = int(self._nflutes.currentText().split()[0]),
+            reinforcement       = self._reinf.isChecked(),
+            reinforcement_angle = self._ra.value(),
+            runout              = self._runout.value(),
         )
         p.derive()
         return p

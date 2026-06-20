@@ -1,15 +1,16 @@
 """
-proposal_dxf.py — Proposal Drawing DXF generator.
+proposal_dxf.py — Proposal Drawing DXF generator (production drawing).
 
 Pipeline:
-  1. Build drill solid via OCC boolean cuts
-     - Body at cutting diameter, shank section at shank diameter
-     - Helical pipe-sweep flute cuts
-  2. Tessellate solid to triangle mesh JSON
-  3. Call nodejs/gen_proposal.mjs → ProjectionGenerator (three-edge-projection)
-     Side view:  project along Y   → drill horizontal, tip left
-     Front view: project along Z   → end-on view of cutting face
-  4. Write both views to DXF with ezdxf
+  1. Build drill solid as a REVOLVED 2D profile (tip cone + Dc body +
+     reinforcement cone/step + shank + back-face chamfer), then cut helical
+     flutes.  Revolving a lathe profile gives every transition for free.
+  2. Tessellate solid -> triangle mesh JSON.
+  3. nodejs/gen_proposal.mjs runs three-edge-projection twice:
+       side view  (project along Y)  and  front/end view (project along Z).
+  4. ezdxf writes a production drawing: both views, centerlines, linear +
+     angular dimensions, a circular-runout feature control frame + datum,
+     and a title block / border.
 """
 
 import json
@@ -17,11 +18,14 @@ import math
 import os
 import subprocess
 import tempfile
+from datetime import date
+
 import ezdxf
 
-from OCP.gp import gp_Pnt, gp_Dir, gp_Ax2
-from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakeCone
-from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse, BRepAlgoAPI_Cut
+from OCP.gp import gp_Pnt, gp_Dir, gp_Ax1, gp_Ax2
+from OCP.BRepPrimAPI import (BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakeCone,
+                             BRepPrimAPI_MakeRevol)
+from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
 from OCP.BRepBuilderAPI import (BRepBuilderAPI_MakeEdge,
                                 BRepBuilderAPI_MakeWire,
                                 BRepBuilderAPI_MakeFace)
@@ -38,6 +42,7 @@ from OCP.TopoDS import TopoDS
 from app.engine.tools.drill import DrillProposalParams
 from app.utils.config import resource_path
 
+EPS = 1e-6
 _HELIX_PTS_PER_TURN = 120
 _FLUTE_RADIUS_FRAC  = 0.38
 _MESH_DEFLECTION    = 0.05   # mm — smaller = finer mesh
@@ -46,7 +51,7 @@ def _node_script() -> str:
     return resource_path(os.path.join("nodejs", "gen_proposal.mjs"))
 
 
-# ──────────────────────────────────────────────────────── solid construction ──
+# ══════════════════════════════════════════════════════════ solid construction ══
 
 def _make_helix_wire(z_start, length, radius, helix_angle_deg, phase_rad):
     pitch = math.pi * 2 * radius / math.tan(math.radians(helix_angle_deg))
@@ -75,41 +80,79 @@ def _disk_profile(center, normal_dir, radius):
     return BRepBuilderAPI_MakeFace(wire).Face()
 
 
-def _build_solid(Dc, shank_dia, point_length, body_length, shank_length,
-                 helix_angle, n_flutes):
-    rc = Dc / 2.0
-    rs = shank_dia / 2.0
+def _revolve_profile(rz_points):
+    """Revolve a closed (r,z) lathe profile 360deg about the Z axis -> solid."""
+    wire = BRepBuilderAPI_MakeWire()
+    n = len(rz_points)
+    for i in range(n):
+        r1, z1 = rz_points[i]
+        r2, z2 = rz_points[(i + 1) % n]     # wrap to close the loop
+        e = BRepBuilderAPI_MakeEdge(gp_Pnt(r1, 0, z1), gp_Pnt(r2, 0, z2)).Edge()
+        wire.Add(e)
+    face = BRepBuilderAPI_MakeFace(wire.Wire(), True).Face()
+    axis = gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1))
+    rev  = BRepPrimAPI_MakeRevol(face, axis)
+    rev.Build()
+    return rev.Shape()
 
-    # Body cylinder — cutting diameter section
-    body_ax = gp_Ax2(gp_Pnt(0, 0, point_length), gp_Dir(0, 0, 1))
-    solid   = BRepPrimAPI_MakeCylinder(body_ax, rc, body_length).Shape()
 
-    # Shank cylinder — fused separately so shank_dia is respected
-    if shank_length > 1e-6:
-        shank_ax  = gp_Ax2(gp_Pnt(0, 0, point_length + body_length),
-                            gp_Dir(0, 0, 1))
-        shank_cyl = BRepPrimAPI_MakeCylinder(shank_ax, rs, shank_length).Shape()
-        fuse = BRepAlgoAPI_Fuse(solid, shank_cyl)
-        fuse.Build()
-        solid = fuse.Shape()
+def _profile_points(p, rc, rs, chamfer):
+    """
+    Closed lathe profile (radius, axial-z) traversed from the tip-axis point,
+    out along the cutting edge, down the body/reinforcement/shank, across the
+    back-face chamfer, and back to the axis.  The closing edge (back-axis ->
+    tip-axis) lies on the centerline.
+    """
+    pts = [(0.0, 0.0)]                                   # tip on axis
 
-    # Tip cone
-    if point_length > 1e-6:
-        tip_ax = gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1))
-        tip    = BRepPrimAPI_MakeCone(tip_ax, 0.0, rc, point_length).Shape()
-        fuse   = BRepAlgoAPI_Fuse(solid, tip)
-        fuse.Build()
-        solid  = fuse.Shape()
+    if p.point_length > EPS:
+        pts.append((rc, p.x_point_base))                # cone edge to body
+    else:
+        pts.append((rc, 0.0))                           # flat tip face corner
 
-    # Helical flute cuts — only through body section
+    pts.append((rc, p.x_body_end))                      # end of Dc body
+
+    if p.has_transition_cone:
+        pts.append((rs, p.x_shank_start))               # sloped reinforcement
+    elif abs(rs - rc) > EPS:
+        pts.append((rs, p.x_body_end))                  # abrupt step to shank
+
+    if chamfer > EPS:
+        pts.append((rs, p.x_end - chamfer))             # shank up to chamfer
+        pts.append((rs - chamfer, p.x_end))             # 45deg back chamfer
+    else:
+        pts.append((rs, p.x_end))                       # square back corner
+
+    pts.append((0.0, p.x_end))                          # back-face on axis
+
+    # drop consecutive duplicates (zero-length sections)
+    out = []
+    for q in pts:
+        if not out or abs(q[0] - out[-1][0]) > EPS or abs(q[1] - out[-1][1]) > EPS:
+            out.append(q)
+    return out
+
+
+def _build_solid(p: DrillProposalParams):
+    rc = p.cutting_diameter / 2.0
+    rs = p.effective_shank_diameter / 2.0
+
+    # back-face chamfer = 0.1 * shank dia, clamped so it can't eat the shank
+    chamfer = min(0.1 * p.effective_shank_diameter,
+                  rs * 0.8, max(p.shank_length * 0.5, 0.0))
+
+    profile = _profile_points(p, rc, rs, chamfer)
+    solid   = _revolve_profile(profile)
+
+    # Helical flute cuts — swept only along the Dc body region
     flute_r = rc * _FLUTE_RADIUS_FRAC
     helix_r = rc
-    for i in range(n_flutes):
-        phase   = (2 * math.pi * i) / n_flutes
-        spine   = _make_helix_wire(point_length, body_length, helix_r,
-                                   helix_angle, phase)
+    for i in range(p.n_flutes):
+        phase = (2 * math.pi * i) / p.n_flutes
+        spine = _make_helix_wire(p.point_length, p.body_length, helix_r,
+                                 p.helix_angle, phase)
 
-        ha  = math.radians(helix_angle)
+        ha  = math.radians(p.helix_angle)
         tx  = -math.sin(phase) * math.cos(ha)
         ty  =  math.cos(phase) * math.cos(ha)
         tz  =  math.sin(ha)
@@ -118,11 +161,11 @@ def _build_solid(Dc, shank_dia, point_length, body_length, shank_length,
 
         start_pt = gp_Pnt(helix_r * math.cos(phase),
                           helix_r * math.sin(phase),
-                          point_length)
-        profile = _disk_profile(start_pt, tang, flute_r)
+                          p.point_length)
+        prof = _disk_profile(start_pt, tang, flute_r)
 
         try:
-            pipe = BRepOffsetAPI_MakePipe(spine, profile)
+            pipe = BRepOffsetAPI_MakePipe(spine, prof)
             pipe.Build()
             if pipe.IsDone():
                 cut = BRepAlgoAPI_Cut(solid, pipe.Shape())
@@ -135,15 +178,12 @@ def _build_solid(Dc, shank_dia, point_length, body_length, shank_length,
     return solid
 
 
-# ──────────────────────────────────────────────────────── mesh export ──
+# ══════════════════════════════════════════════════════════════ mesh export ══
 
 def _tessellate(shape) -> dict:
     BRepMesh_IncrementalMesh(shape, _MESH_DEFLECTION).Perform()
 
-    verts  = []
-    idxs   = []
-    offset = 0
-
+    verts, idxs, offset = [], [], 0
     exp = TopExp_Explorer(shape, TopAbs_FACE)
     while exp.More():
         face = TopoDS.Face_s(exp.Current())
@@ -153,43 +193,29 @@ def _tessellate(shape) -> dict:
         if tri is not None and tri.NbTriangles() > 0:
             n       = tri.NbNodes()
             flipped = (face.Orientation() == TopAbs_REVERSED)
-
             for k in range(1, n + 1):
-                p = tri.Node(k)
-                verts += [p.X(), p.Y(), p.Z()]
-
+                pnt = tri.Node(k)
+                verts += [pnt.X(), pnt.Y(), pnt.Z()]
             for k in range(1, tri.NbTriangles() + 1):
-                t = tri.Triangle(k)
-                a, b, c = t.Get()
+                a, b, c = tri.Triangle(k).Get()
                 a -= 1; b -= 1; c -= 1
-                if flipped:
-                    idxs += [offset+a, offset+c, offset+b]
-                else:
-                    idxs += [offset+a, offset+b, offset+c]
-
+                idxs += ([offset+a, offset+c, offset+b] if flipped
+                         else [offset+a, offset+b, offset+c])
             offset += n
-
         exp.Next()
 
     return {'v': verts, 'i': idxs}
 
 
-# ──────────────────────────────────────────────────────── Node.js projection ──
+# ══════════════════════════════════════════════════════════ Node.js projection ══
 
 def _project_via_nodejs(mesh_data: dict) -> dict:
-    """
-    Run gen_proposal.mjs.
-    Returns {'side': [[z1,x1,z2,x2],...], 'front': [[x1,y1,x2,y2],...]}
-    (coordinates already in DXF space — side: axial=X, radial=Y;
-     front: radial_X=X, radial_Y=Y centred at 0,0)
-    """
     script = os.path.normpath(_node_script())
 
     with tempfile.NamedTemporaryFile(mode='w', suffix='.json',
                                      delete=False, encoding='utf-8') as mf:
         json.dump(mesh_data, mf)
         mesh_path = mf.name
-
     seg_path = mesh_path.replace('.json', '_segs.json')
 
     try:
@@ -200,27 +226,204 @@ def _project_via_nodejs(mesh_data: dict) -> dict:
         if result.returncode != 0:
             raise RuntimeError(
                 f"gen_proposal.mjs failed (exit {result.returncode}):\n"
-                f"{result.stderr.strip()}"
-            )
+                f"{result.stderr.strip()}")
         with open(seg_path, 'r', encoding='utf-8') as sf:
-            raw = json.load(sf)   # { side: [...], front: [...] }
+            raw = json.load(sf)
     finally:
-        for p in (mesh_path, seg_path):
+        for f in (mesh_path, seg_path):
             try:
-                os.remove(p)
+                os.remove(f)
             except OSError:
                 pass
 
-    # Side view raw from Node: [x1, z1, x2, z2]
-    # ProjectionGenerator looks along Y → output (x, 0, z)
-    # DXF side view: X = world-Z (axial), Y = world-X (radial)  → swap
-    side  = [( z1, x1, z2, x2) for (x1, z1, x2, z2) in raw['side']]
-    front = raw['front']   # already (orig_X, orig_Y) — circle in XY plane
-
+    # side raw [x,z,x,z] -> DXF (axial=X, radial=Y) ; front already (X,Y)
+    side  = [(z1, x1, z2, x2) for (x1, z1, x2, z2) in raw['side']]
+    front = raw['front']
     return {'side': side, 'front': front}
 
 
-# ──────────────────────────────────────────────────────── public entry point ──
+# ══════════════════════════════════════════════════════════ DXF annotations ══
+
+def _ensure_layers(doc):
+    specs = [
+        ("OUTLINE", 7),   ("FRONT", 7),   ("CENTER", 4),
+        ("DIM", 1),       ("GDT", 2),     ("TITLE", 8),
+    ]
+    for name, color in specs:
+        if name not in doc.layers:
+            doc.layers.add(name, color=color)
+    # CENTER linetype for centerlines (setup=True provides it)
+    if "CENTER" not in doc.linetypes:
+        doc.linetypes.add("CENTER", pattern=[2.0, 1.25, -0.25, 0.25, -0.25])
+
+
+def _dim_override(h):
+    return {
+        "dimtxt": h, "dimasz": h, "dimexe": h * 0.5, "dimexo": h * 0.6,
+        "dimgap": h * 0.3, "dimdec": 2, "dimtad": 1, "dimclrt": 1,
+    }
+
+
+def _add_centerlines(msp, p, rc, front_cx, front_r, pad):
+    msp.add_line((-pad, 0), (p.overall_length + pad, 0),
+                 dxfattribs={"layer": "CENTER", "linetype": "CENTER"})
+    ext = front_r + pad
+    msp.add_line((front_cx - ext, 0), (front_cx + ext, 0),
+                 dxfattribs={"layer": "CENTER", "linetype": "CENTER"})
+    msp.add_line((front_cx, -ext), (front_cx, ext),
+                 dxfattribs={"layer": "CENTER", "linetype": "CENTER"})
+
+
+def _add_dims(msp, p, rc, rs, h):
+    ov   = _dim_override(h)
+    rmax = max(rc, rs)
+    dia  = "⌀"   # ⌀
+
+    # Dc (vertical) — left of the tip
+    dc = msp.add_linear_dim(
+        base=(-(rc + h * 6), 0), p1=(p.x_point_base, rc), p2=(p.x_point_base, -rc),
+        angle=90, dimstyle="EZDXF",
+        override={**ov, "dimpost": dia + "<>"}, dxfattribs={"layer": "DIM"})
+    dc.render()
+
+    # D (vertical) — right of the back face, only if it differs
+    if abs(rs - rc) > 1e-3:
+        dd = msp.add_linear_dim(
+            base=(p.x_end + rs + h * 6, 0), p1=(p.x_end, rs), p2=(p.x_end, -rs),
+            angle=90, dimstyle="EZDXF",
+            override={**ov, "dimpost": dia + "<>"}, dxfattribs={"layer": "DIM"})
+        dd.render()
+
+    # OAL (horizontal) — far below
+    oal = msp.add_linear_dim(
+        base=(0, -(rmax + h * 9)), p1=(0, 0), p2=(p.overall_length, 0),
+        angle=0, dimstyle="EZDXF", override=ov, dxfattribs={"layer": "DIM"})
+    oal.render()
+
+    # Ls (shank length, horizontal) — nearer below
+    ls = msp.add_linear_dim(
+        base=(0, -(rmax + h * 5)), p1=(p.x_shank_start, -rs), p2=(p.x_end, -rs),
+        angle=0, dimstyle="EZDXF", override=ov, dxfattribs={"layer": "DIM"})
+    ls.render()
+
+    # Point angle (angular) — at the tip
+    if p.point_length > EPS:
+        try:
+            ang = msp.add_angular_dim_3p(
+                base=(p.x_point_base * 0.5, rc * 1.6),
+                center=(0, 0), p1=(p.x_point_base, rc), p2=(p.x_point_base, -rc),
+                dimstyle="EZDXF",
+                override={**ov, "dimaunit": 0, "dimadec": 1},
+                dxfattribs={"layer": "DIM"})
+            ang.render()
+        except Exception:
+            pass
+
+
+def _add_runout_fcf(msp, p, rc, h):
+    """Circular-runout feature control frame above the Dc dim, datum on shank."""
+    if p.runout <= 0:
+        return
+    cell = h * 1.8
+    val  = f"{p.runout:.3f}"
+    vw   = max(len(val) * h * 0.85, cell)     # value cell width
+    x0   = p.x_point_base - rc * 0.5
+    y0   = rc + h * 5                          # above the part
+    lay  = {"layer": "GDT"}
+
+    # frame: [ runout sym | value | datum ]
+    dw   = cell
+    box  = [(x0, y0), (x0 + cell + vw + dw, y0),
+            (x0 + cell + vw + dw, y0 + cell), (x0, y0 + cell), (x0, y0)]
+    msp.add_lwpolyline(box, dxfattribs=lay)
+    msp.add_line((x0 + cell, y0), (x0 + cell, y0 + cell), dxfattribs=lay)
+    msp.add_line((x0 + cell + vw, y0), (x0 + cell + vw, y0 + cell), dxfattribs=lay)
+
+    # circular-runout symbol: single arrow inclined at 45 deg
+    ax0, ay0 = x0 + cell * 0.22, y0 + cell * 0.20
+    ax1, ay1 = x0 + cell * 0.78, y0 + cell * 0.80
+    msp.add_line((ax0, ay0), (ax1, ay1), dxfattribs=lay)
+    ah = cell * 0.16
+    msp.add_line((ax1, ay1), (ax1 - ah, ay1), dxfattribs=lay)
+    msp.add_line((ax1, ay1), (ax1, ay1 - ah), dxfattribs=lay)
+
+    msp.add_text(val, height=h,
+                 dxfattribs={"layer": "GDT", "style": "OpenSans"}).set_placement(
+        (x0 + cell + vw * 0.5, y0 + cell * 0.5),
+        align=ezdxf.enums.TextEntityAlignment.MIDDLE_CENTER)
+    msp.add_text("A", height=h,
+                 dxfattribs={"layer": "GDT", "style": "OpenSans"}).set_placement(
+        (x0 + cell + vw + dw * 0.5, y0 + cell * 0.5),
+        align=ezdxf.enums.TextEntityAlignment.MIDDLE_CENTER)
+
+    # leader from frame down to the Dc surface
+    lx = x0 + cell * 0.5
+    msp.add_line((lx, y0), (lx, rc), dxfattribs={"layer": "GDT"})
+
+    # datum feature symbol "A" on the shank, toward the back
+    dat_x = p.x_shank_start + p.shank_length * 0.6
+    rs    = p.effective_shank_diameter / 2.0
+    tri_h = h * 1.2
+    msp.add_solid([(dat_x, rs), (dat_x - tri_h * 0.6, rs + tri_h),
+                   (dat_x + tri_h * 0.6, rs + tri_h)], dxfattribs={"layer": "GDT"})
+    db_y = rs + tri_h + h * 0.5
+    dbox = [(dat_x - h, db_y), (dat_x + h, db_y),
+            (dat_x + h, db_y + h * 2), (dat_x - h, db_y + h * 2), (dat_x - h, db_y)]
+    msp.add_lwpolyline(dbox, dxfattribs={"layer": "GDT"})
+    msp.add_text("A", height=h,
+                 dxfattribs={"layer": "GDT", "style": "OpenSans"}).set_placement(
+        (dat_x, db_y + h), align=ezdxf.enums.TextEntityAlignment.MIDDLE_CENTER)
+
+
+def _add_title_block(msp, p, bounds, h):
+    """Border around the drawing + a title block in the bottom-right corner."""
+    minx, miny, maxx, maxy = bounds
+    margin = h * 4
+    bx0, by0 = minx - margin, miny - margin
+    bx1, by1 = maxx + margin, maxy + margin
+
+    msp.add_lwpolyline([(bx0, by0), (bx1, by0), (bx1, by1), (bx0, by1), (bx0, by0)],
+                       dxfattribs={"layer": "TITLE"})
+
+    # title block table — bottom-right
+    rows = [
+        ("TITLE",  f"{p.tool_type.upper()} PROPOSAL"),
+        ("Dc",     f"⌀{p.cutting_diameter:g}"),
+        ("D",      f"⌀{p.effective_shank_diameter:g}"),
+        ("OAL",    f"{p.overall_length:g}"),
+        ("Ls",     f"{p.shank_length:g}"),
+        ("POINT",  f"{p.point_angle:g}°"),
+        ("HELIX",  f"{p.helix_angle:g}°"),
+        ("FLUTES", f"{p.n_flutes}"),
+        ("SCALE",  "1:1"),
+        ("DATE",   date.today().isoformat()),
+    ]
+    rh   = h * 2.2
+    colw = (h * 7, h * 12)
+    tbw  = colw[0] + colw[1]
+    tbx  = bx1 - tbw
+    tby  = by0                       # grows upward from bottom edge
+    lay  = {"layer": "TITLE"}
+
+    for i, (key, val) in enumerate(rows):
+        ry0 = tby + i * rh
+        ry1 = ry0 + rh
+        msp.add_lwpolyline([(tbx, ry0), (bx1, ry0), (bx1, ry1), (tbx, ry1), (tbx, ry0)],
+                           dxfattribs=lay)
+        msp.add_line((tbx + colw[0], ry0), (tbx + colw[0], ry1), dxfattribs=lay)
+        msp.add_text(key, height=h * 0.9,
+                     dxfattribs={"layer": "TITLE", "style": "OpenSans"}).set_placement(
+            (tbx + h * 0.6, ry0 + rh * 0.5),
+            align=ezdxf.enums.TextEntityAlignment.MIDDLE_LEFT)
+        msp.add_text(val, height=h * 0.9,
+                     dxfattribs={"layer": "TITLE", "style": "OpenSans"}).set_placement(
+            (tbx + colw[0] + h * 0.6, ry0 + rh * 0.5),
+            align=ezdxf.enums.TextEntityAlignment.MIDDLE_LEFT)
+
+    return (bx0, by0, bx1, by1)
+
+
+# ══════════════════════════════════════════════════════════ public entry point ══
 
 def generate(params: DrillProposalParams, out_path: str) -> None:
     errs = params.validate()
@@ -229,51 +432,49 @@ def generate(params: DrillProposalParams, out_path: str) -> None:
 
     p  = params
     rc = p.cutting_diameter / 2.0
+    rs = p.effective_shank_diameter / 2.0
 
-    solid     = _build_solid(
-        Dc           = p.cutting_diameter,
-        shank_dia    = p.effective_shank_diameter,
-        point_length = p.point_length,
-        body_length  = p.body_length,
-        shank_length = p.shank_length,
-        helix_angle  = p.helix_angle,
-        n_flutes     = p.n_flutes,
-    )
+    solid     = _build_solid(p)
     mesh_data = _tessellate(solid)
     views     = _project_via_nodejs(mesh_data)
+    side_segs  = views['side']
+    front_segs = views['front']
 
-    side_segs  = views['side']    # [(z1, x1, z2, x2), ...]  axial=X, radial=Y
-    front_segs = views['front']   # [(x1, y1, x2, y2), ...]  centred at (0,0)
+    # feature size drives all annotation text heights
+    feature = max(p.overall_length, p.cutting_diameter * 4.0,
+                  p.effective_shank_diameter * 4.0, 1.0)
+    h   = max(feature * 0.018, 0.8)
+    pad = rc * 0.5
 
-    # Front view is placed to the right of the side view:
-    #   side  spans DXF X = [0 … OAL]
-    #   gap   = rc * 2
-    #   front centred at DXF X = OAL + gap
-    front_cx = p.overall_length + rc * 2
+    front_r  = max(rc, rs)
+    front_cx = p.overall_length + front_r * 2.5
 
-    doc = ezdxf.new("R2010")
+    doc = ezdxf.new("R2010", setup=True)
+    doc.header["$INSUNITS"] = 4
+    doc.header["$LTSCALE"]  = max(feature * 0.02, 0.5)
     msp = doc.modelspace()
+    _ensure_layers(doc)
 
-    all_x, all_y = [], []
-
-    # Side view
+    # ── geometry: side + front views ──
     for z1, x1, z2, x2 in side_segs:
-        msp.add_line((z1, x1), (z2, x2), dxfattribs={"layer": "SIDE"})
-        all_x += [z1, z2]
-        all_y += [x1, x2]
-
-    # Front / end view
+        msp.add_line((z1, x1), (z2, x2), dxfattribs={"layer": "OUTLINE"})
     for x1, y1, x2, y2 in front_segs:
-        fx1, fy1 = x1 + front_cx, y1
-        fx2, fy2 = x2 + front_cx, y2
-        msp.add_line((fx1, fy1), (fx2, fy2), dxfattribs={"layer": "FRONT"})
-        all_x += [fx1, fx2]
-        all_y += [fy1, fy2]
+        msp.add_line((x1 + front_cx, y1), (x2 + front_cx, y2),
+                     dxfattribs={"layer": "FRONT"})
 
-    if all_x:
-        pad = rc * 0.15
-        doc.header["$INSUNITS"] = 4
-        doc.header["$EXTMIN"] = (min(all_x) - pad, min(all_y) - pad, 0.0)
-        doc.header["$EXTMAX"] = (max(all_x) + pad, max(all_y) + pad, 0.0)
+    # ── annotations ──
+    _add_centerlines(msp, p, rc, front_cx, front_r, pad)
+    _add_dims(msp, p, rc, rs, h)
+    _add_runout_fcf(msp, p, rc, h)
+
+    # bounds over everything drawn so far -> border + title block
+    minx, miny = -rc * 2, -(max(rc, rs) + h * 12)
+    maxx       = front_cx + front_r + rc
+    maxy       = max(rc, rs) + h * 9
+    bounds     = _add_title_block(msp, p, (minx, miny, maxx, maxy), h)
+
+    bx0, by0, bx1, by1 = bounds
+    doc.header["$EXTMIN"] = (bx0 - h, by0 - h, 0.0)
+    doc.header["$EXTMAX"] = (bx1 + h, by1 + h, 0.0)
 
     doc.saveas(out_path)

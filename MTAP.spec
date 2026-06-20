@@ -1,4 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
+from PyInstaller.utils.hooks import collect_submodules, collect_data_files
+
 datas = [
     ('app\\ui\\styles_dark.qss',  'app\\ui'),
     ('app\\ui\\styles_light.qss', 'app\\ui'),
@@ -6,6 +8,9 @@ datas = [
     # Proposal Drawing: Node.js projection script + three-edge-projection packages
     ('nodejs', 'nodejs'),
 ]
+# ezdxf with setup=True needs its font/standards data files at runtime.
+datas += collect_data_files('ezdxf')
+
 binaries = []
 hiddenimports = [
     'numpy', 'numpy.core', 'numpy.core._multiarray_umath',
@@ -14,10 +19,10 @@ hiddenimports = [
     'OCP.BRepBuilderAPI', 'OCP.BRepOffsetAPI', 'OCP.BRepMesh',
     'OCP.BRep', 'OCP.TopLoc', 'OCP.GeomAPI', 'OCP.TColgp',
     'OCP.TopExp', 'OCP.TopAbs', 'OCP.TopoDS', 'OCP.GC',
-    # ezdxf
-    'ezdxf', 'ezdxf.entities', 'ezdxf.layouts', 'ezdxf.sections',
-    'ezdxf.document', 'ezdxf.lldxf',
 ]
+# Pull in the whole ezdxf package (dimension renderer, fonts, standards are
+# imported dynamically and would be missed by static analysis otherwise).
+hiddenimports += collect_submodules('ezdxf')
 
 # cadquery high-level API and matplotlib still excluded (not used).
 excludes = ['matplotlib', 'cadquery', 'PIL']
