@@ -4,7 +4,6 @@ datas = [
     ('app\\ui\\styles_dark.qss',  'app\\ui'),
     ('app\\ui\\styles_light.qss', 'app\\ui'),
     ('assets',  'assets'),
-    ('nodejs',  'nodejs'),    # Node.js DXF generator + helper scripts
 ]
 binaries = []
 hiddenimports = ['numpy', 'numpy.core', 'numpy.core._multiarray_umath']

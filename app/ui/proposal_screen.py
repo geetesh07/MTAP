@@ -1,4 +1,4 @@
-"""Proposal Drawing screen — generates OCC-quality DXF via Node.js."""
+"""Proposal Drawing screen."""
 
 import os
 import traceback
@@ -162,11 +162,9 @@ class ProposalScreen(QWidget):
         lo = QVBoxLayout(g)
 
         lbl = QLabel(
-            "Builds a true 3D solid with helical flutes\n"
-            "via OpenCASCADE, then projects to a clean\n"
-            "engineering side-view DXF — same pipeline\n"
-            "as the 3D web app.\n\n"
-            "Requires Node.js on PATH."
+            "Generates a proposal DXF using pre-drawn\n"
+            "helix blocks scaled to the tool dimensions.\n\n"
+            "Implementation in progress."
         )
         lbl.setObjectName("PlaceholderSubText")
         lbl.setWordWrap(True)
@@ -240,7 +238,7 @@ class ProposalScreen(QWidget):
             if not path:
                 return
 
-            self._status.setText("Building OCC solid + projecting…  (20–60 s)")
+            self._status.setText("Generating proposal DXF…")
             self.repaint()
 
             generate_dxf(params, path)
