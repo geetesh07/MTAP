@@ -105,15 +105,24 @@ def generate_matrix_isolated(out_root: str, child_prefix: list, log=print) -> in
         os.makedirs(folder, exist_ok=True)
         out = os.path.join(folder, f"{name}.dxf")
         t = time.time()
-        try:
-            r = subprocess.run(child_prefix + ["--gen-one", name, out], timeout=300)
-        except subprocess.TimeoutExpired:
-            log(f"  TIMEOUT {category}/{name}")
-            continue
-        if r.returncode == 0 and os.path.exists(out):
+        # The frozen OpenCASCADE build crashes intermittently even on a single
+        # build, so retry a few times — a fresh process almost always succeeds.
+        ok = False
+        for attempt in range(1, 4):
+            try:
+                r = subprocess.run(child_prefix + ["--gen-one", name, out],
+                                   timeout=300)
+            except subprocess.TimeoutExpired:
+                log(f"  TIMEOUT {category}/{name} (attempt {attempt})")
+                continue
+            if r.returncode == 0 and os.path.exists(out):
+                ok = True
+                break
+            log(f"  retry {category}/{name} (attempt {attempt}, rc={r.returncode})")
+        if ok:
             made += 1
             log(f"  OK   {category}/{name:<22} {time.time()-t:5.1f}s")
         else:
-            log(f"  FAIL {category}/{name}  rc={r.returncode}")
+            log(f"  FAIL {category}/{name}")
     log(f"DONE  {made}/{len(MATRIX)} DXFs  total {time.time()-t0:.0f}s  ->  {out_root}")
     return made
