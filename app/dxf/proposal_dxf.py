@@ -18,7 +18,6 @@ import math
 import os
 import subprocess
 import tempfile
-from datetime import date
 
 import ezdxf
 
@@ -245,22 +244,25 @@ def _project_via_nodejs(mesh_data: dict) -> dict:
 # ══════════════════════════════════════════════════════════ DXF annotations ══
 
 def _ensure_layers(doc):
+    # Colours: drill model = yellow(2), centreline = cyan(4), dims = red(1)
     specs = [
-        ("OUTLINE", 7),   ("FRONT", 7),   ("CENTER", 4),
-        ("DIM", 1),       ("GDT", 2),     ("TITLE", 8),
+        ("OUTLINE", 2),   ("FRONT", 2),   ("CENTER", 4),   ("DIM", 1),
     ]
     for name, color in specs:
         if name not in doc.layers:
             doc.layers.add(name, color=color)
-    # CENTER linetype for centerlines (setup=True provides it)
     if "CENTER" not in doc.linetypes:
         doc.linetypes.add("CENTER", pattern=[2.0, 1.25, -0.25, 0.25, -0.25])
 
 
 def _dim_override(h):
+    # dimlfac MUST be 1 — ezdxf's EZDXF dimstyle ships with dimlfac=100 (1:100
+    # plan scale), which would render 100 mm as 10000.  Colours: dim lines +
+    # extension lines red(1), dim text yellow(2).
     return {
         "dimtxt": h, "dimasz": h, "dimexe": h * 0.5, "dimexo": h * 0.6,
-        "dimgap": h * 0.3, "dimdec": 2, "dimtad": 1, "dimclrt": 1,
+        "dimgap": h * 0.3, "dimdec": 2, "dimtad": 1,
+        "dimlfac": 1.0, "dimclrd": 1, "dimclre": 1, "dimclrt": 2,
     }
 
 
@@ -306,12 +308,17 @@ def _add_dims(msp, p, rc, rs, h):
         angle=0, dimstyle="EZDXF", override=ov, dxfattribs={"layer": "DIM"})
     ls.render()
 
-    # Point angle (angular) — at the tip
+    # Point angle (angular) — at the tip.  The arc-location point decides which
+    # sector is measured; it must sit INSIDE the cone opening (on the +X axis
+    # between the two rays) so we get the included angle (e.g. 140) and not its
+    # reflex (220).
     if p.point_length > EPS:
         try:
+            # p1/p2 ordered so the CCW sweep p1->p2 is the INCLUDED angle
+            # (e.g. 140), not the reflex (220).
             ang = msp.add_angular_dim_3p(
-                base=(p.x_point_base * 0.5, rc * 1.6),
-                center=(0, 0), p1=(p.x_point_base, rc), p2=(p.x_point_base, -rc),
+                base=(rc * 1.5, 0.0),
+                center=(0, 0), p1=(p.x_point_base, -rc), p2=(p.x_point_base, rc),
                 dimstyle="EZDXF",
                 override={**ov, "dimaunit": 0, "dimadec": 1},
                 dxfattribs={"layer": "DIM"})
@@ -320,127 +327,18 @@ def _add_dims(msp, p, rc, rs, h):
             pass
 
 
-def _add_runout_fcf(msp, p, rc, h):
-    """Circular-runout feature control frame above the Dc dim, datum on shank."""
-    if p.runout <= 0:
-        return
-    cell = h * 1.8
-    val  = f"{p.runout:.3f}"
-    vw   = max(len(val) * h * 0.85, cell)     # value cell width
-    x0   = p.x_point_base - rc * 0.5
-    y0   = rc + h * 5                          # above the part
-    lay  = {"layer": "GDT"}
-
-    # frame: [ runout sym | value | datum ]
-    dw   = cell
-    box  = [(x0, y0), (x0 + cell + vw + dw, y0),
-            (x0 + cell + vw + dw, y0 + cell), (x0, y0 + cell), (x0, y0)]
-    msp.add_lwpolyline(box, dxfattribs=lay)
-    msp.add_line((x0 + cell, y0), (x0 + cell, y0 + cell), dxfattribs=lay)
-    msp.add_line((x0 + cell + vw, y0), (x0 + cell + vw, y0 + cell), dxfattribs=lay)
-
-    # circular-runout symbol: single arrow inclined at 45 deg
-    ax0, ay0 = x0 + cell * 0.22, y0 + cell * 0.20
-    ax1, ay1 = x0 + cell * 0.78, y0 + cell * 0.80
-    msp.add_line((ax0, ay0), (ax1, ay1), dxfattribs=lay)
-    ah = cell * 0.16
-    msp.add_line((ax1, ay1), (ax1 - ah, ay1), dxfattribs=lay)
-    msp.add_line((ax1, ay1), (ax1, ay1 - ah), dxfattribs=lay)
-
-    msp.add_text(val, height=h,
-                 dxfattribs={"layer": "GDT", "style": "OpenSans"}).set_placement(
-        (x0 + cell + vw * 0.5, y0 + cell * 0.5),
-        align=ezdxf.enums.TextEntityAlignment.MIDDLE_CENTER)
-    msp.add_text("A", height=h,
-                 dxfattribs={"layer": "GDT", "style": "OpenSans"}).set_placement(
-        (x0 + cell + vw + dw * 0.5, y0 + cell * 0.5),
-        align=ezdxf.enums.TextEntityAlignment.MIDDLE_CENTER)
-
-    # leader from frame down to the Dc surface
-    lx = x0 + cell * 0.5
-    msp.add_line((lx, y0), (lx, rc), dxfattribs={"layer": "GDT"})
-
-    # datum feature symbol "A" on the shank, toward the back
-    dat_x = p.x_shank_start + p.shank_length * 0.6
-    rs    = p.effective_shank_diameter / 2.0
-    tri_h = h * 1.2
-    msp.add_solid([(dat_x, rs), (dat_x - tri_h * 0.6, rs + tri_h),
-                   (dat_x + tri_h * 0.6, rs + tri_h)], dxfattribs={"layer": "GDT"})
-    db_y = rs + tri_h + h * 0.5
-    dbox = [(dat_x - h, db_y), (dat_x + h, db_y),
-            (dat_x + h, db_y + h * 2), (dat_x - h, db_y + h * 2), (dat_x - h, db_y)]
-    msp.add_lwpolyline(dbox, dxfattribs={"layer": "GDT"})
-    msp.add_text("A", height=h,
-                 dxfattribs={"layer": "GDT", "style": "OpenSans"}).set_placement(
-        (dat_x, db_y + h), align=ezdxf.enums.TextEntityAlignment.MIDDLE_CENTER)
-
-
-def _add_title_block(msp, p, bounds, h):
-    """Border around the drawing + a title block in the bottom-right corner."""
-    minx, miny, maxx, maxy = bounds
-    margin = h * 4
-    bx0, by0 = minx - margin, miny - margin
-    bx1, by1 = maxx + margin, maxy + margin
-
-    msp.add_lwpolyline([(bx0, by0), (bx1, by0), (bx1, by1), (bx0, by1), (bx0, by0)],
-                       dxfattribs={"layer": "TITLE"})
-
-    # title block table — bottom-right
-    rows = [
-        ("TITLE",  f"{p.tool_type.upper()} PROPOSAL"),
-        ("Dc",     f"⌀{p.cutting_diameter:g}"),
-        ("D",      f"⌀{p.effective_shank_diameter:g}"),
-        ("OAL",    f"{p.overall_length:g}"),
-        ("Ls",     f"{p.shank_length:g}"),
-        ("POINT",  f"{p.point_angle:g}°"),
-        ("HELIX",  f"{p.helix_angle:g}°"),
-        ("FLUTES", f"{p.n_flutes}"),
-        ("SCALE",  "1:1"),
-        ("DATE",   date.today().isoformat()),
-    ]
-    rh   = h * 2.2
-    colw = (h * 7, h * 12)
-    tbw  = colw[0] + colw[1]
-    tbx  = bx1 - tbw
-    tby  = by0                       # grows upward from bottom edge
-    lay  = {"layer": "TITLE"}
-
-    for i, (key, val) in enumerate(rows):
-        ry0 = tby + i * rh
-        ry1 = ry0 + rh
-        msp.add_lwpolyline([(tbx, ry0), (bx1, ry0), (bx1, ry1), (tbx, ry1), (tbx, ry0)],
-                           dxfattribs=lay)
-        msp.add_line((tbx + colw[0], ry0), (tbx + colw[0], ry1), dxfattribs=lay)
-        msp.add_text(key, height=h * 0.9,
-                     dxfattribs={"layer": "TITLE", "style": "OpenSans"}).set_placement(
-            (tbx + h * 0.6, ry0 + rh * 0.5),
-            align=ezdxf.enums.TextEntityAlignment.MIDDLE_LEFT)
-        msp.add_text(val, height=h * 0.9,
-                     dxfattribs={"layer": "TITLE", "style": "OpenSans"}).set_placement(
-            (tbx + colw[0] + h * 0.6, ry0 + rh * 0.5),
-            align=ezdxf.enums.TextEntityAlignment.MIDDLE_LEFT)
-
-    return (bx0, by0, bx1, by1)
-
-
 # ══════════════════════════════════════════════════════════ public entry point ══
 
-def generate(params: DrillProposalParams, out_path: str) -> None:
-    errs = params.validate()
-    if errs:
-        raise ValueError("\n".join(errs))
-
-    p  = params
+def _build_geometry_dxf(p: DrillProposalParams, geom_path: str) -> dict:
+    """Write the geometry-only DXF (views + centrelines + dims). Returns anchor
+    points the AutoCAD stage needs to place the GD&T / datum blocks."""
     rc = p.cutting_diameter / 2.0
     rs = p.effective_shank_diameter / 2.0
 
     solid     = _build_solid(p)
     mesh_data = _tessellate(solid)
     views     = _project_via_nodejs(mesh_data)
-    side_segs  = views['side']
-    front_segs = views['front']
 
-    # feature size drives all annotation text heights
     feature = max(p.overall_length, p.cutting_diameter * 4.0,
                   p.effective_shank_diameter * 4.0, 1.0)
     h   = max(feature * 0.018, 0.8)
@@ -455,26 +353,41 @@ def generate(params: DrillProposalParams, out_path: str) -> None:
     msp = doc.modelspace()
     _ensure_layers(doc)
 
-    # ── geometry: side + front views ──
-    for z1, x1, z2, x2 in side_segs:
+    for z1, x1, z2, x2 in views['side']:
         msp.add_line((z1, x1), (z2, x2), dxfattribs={"layer": "OUTLINE"})
-    for x1, y1, x2, y2 in front_segs:
+    for x1, y1, x2, y2 in views['front']:
         msp.add_line((x1 + front_cx, y1), (x2 + front_cx, y2),
                      dxfattribs={"layer": "FRONT"})
 
-    # ── annotations ──
     _add_centerlines(msp, p, rc, front_cx, front_r, pad)
     _add_dims(msp, p, rc, rs, h)
-    _add_runout_fcf(msp, p, rc, h)
 
-    # bounds over everything drawn so far -> border + title block
-    minx, miny = -rc * 2, -(max(rc, rs) + h * 12)
-    maxx       = front_cx + front_r + rc
-    maxy       = max(rc, rs) + h * 9
-    bounds     = _add_title_block(msp, p, (minx, miny, maxx, maxy), h)
+    doc.saveas(geom_path)
 
-    bx0, by0, bx1, by1 = bounds
-    doc.header["$EXTMIN"] = (bx0 - h, by0 - h, 0.0)
-    doc.header["$EXTMAX"] = (bx1 + h, by1 + h, 0.0)
+    # GD&T frame above the cutting end; datum on the shank toward the back
+    return {
+        "h":        h,
+        "gdt_ins":  (p.x_point_base, rc + h * 6),
+        "dat_ins":  (p.x_shank_start + p.shank_length * 0.6, rs),
+    }
 
-    doc.saveas(out_path)
+
+def generate(params: DrillProposalParams, out_path: str) -> None:
+    errs = params.validate()
+    if errs:
+        raise ValueError("\n".join(errs))
+
+    # Stage 1 — geometry DXF (pure ezdxf)
+    fd, geom_path = tempfile.mkstemp(suffix="_geom.dxf")
+    os.close(fd)
+    try:
+        anchors = _build_geometry_dxf(params, geom_path)
+        # Stage 2 — AutoCAD inserts the real DWG blocks/template and native-saves
+        # the result so it opens read-WRITE (see memory dxf-open-readwrite).
+        from app.dxf.proposal_acad import finalize_with_acad
+        finalize_with_acad(geom_path, params, anchors, out_path)
+    finally:
+        try:
+            os.remove(geom_path)
+        except OSError:
+            pass

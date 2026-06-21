@@ -71,9 +71,27 @@ def run_selftest() -> None:
     print(text)
 
 
+def run_gen_proposals(out_root: str) -> None:
+    """Headless: generate the full proposal-DXF matrix into out_root.
+    Usage:  MTAP.exe --gen-proposals "C:\\path\\to\\output_folder" """
+    setup_logging()
+    log = get_logger()
+    from app.dxf.proposal_batch import generate_matrix
+    log.info("Generating proposal matrix into %s", out_root)
+    n = generate_matrix(out_root, log=lambda m: (print(m), log.info(m)))
+    print(f"\nGenerated {n} DXFs into {out_root}")
+
+
 def main() -> None:
     if "--selftest" in sys.argv:
         run_selftest()
+        return
+
+    if "--gen-proposals" in sys.argv:
+        i = sys.argv.index("--gen-proposals")
+        out_root = sys.argv[i + 1] if i + 1 < len(sys.argv) else os.path.join(
+            os.path.expanduser("~"), "Desktop", "MTAP_Proposals")
+        run_gen_proposals(out_root)
         return
 
     log_path = setup_logging()
