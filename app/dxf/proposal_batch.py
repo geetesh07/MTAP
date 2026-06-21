@@ -46,8 +46,32 @@ MATRIX = [
 ]
 
 
+def _find_case(name: str):
+    for cat, nm, ov in MATRIX:
+        if nm == name:
+            return cat, nm, ov
+    return None
+
+
+def generate_one(name: str, out_path: str) -> None:
+    """Generate a single matrix case by name (used by the per-file subprocess)."""
+    case = _find_case(name)
+    if not case:
+        raise ValueError(f"unknown case: {name}")
+    _, _, ov = case
+    p = DrillProposalParams(**{**BASE, **ov})
+    p.derive()
+    errs = p.validate()
+    if errs:
+        raise ValueError("; ".join(errs))
+    generate(p, out_path)
+
+
 def generate_matrix(out_root: str, log=print) -> int:
-    """Generate the full matrix under out_root. Returns count generated."""
+    """Generate the full matrix IN-PROCESS. Returns count generated.
+
+    Note: the frozen exe can accumulate native (OpenCASCADE) state across many
+    builds in one process and crash — prefer generate_matrix_isolated() there."""
     os.makedirs(out_root, exist_ok=True)
     t0 = time.time()
     made = 0
@@ -66,4 +90,30 @@ def generate_matrix(out_root: str, log=print) -> int:
         made += 1
         log(f"  {category}/{name:<22} {time.time()-t:5.1f}s")
     log(f"DONE  {made} DXFs  total {time.time()-t0:.0f}s  ->  {out_root}")
+    return made
+
+
+def generate_matrix_isolated(out_root: str, child_prefix: list, log=print) -> int:
+    """Generate each DXF in a FRESH child process (child_prefix + --gen-one name
+    out) so OpenCASCADE native state never accumulates.  Robust for the exe."""
+    import subprocess
+    os.makedirs(out_root, exist_ok=True)
+    t0 = time.time()
+    made = 0
+    for category, name, ov in MATRIX:
+        folder = os.path.join(out_root, category)
+        os.makedirs(folder, exist_ok=True)
+        out = os.path.join(folder, f"{name}.dxf")
+        t = time.time()
+        try:
+            r = subprocess.run(child_prefix + ["--gen-one", name, out], timeout=300)
+        except subprocess.TimeoutExpired:
+            log(f"  TIMEOUT {category}/{name}")
+            continue
+        if r.returncode == 0 and os.path.exists(out):
+            made += 1
+            log(f"  OK   {category}/{name:<22} {time.time()-t:5.1f}s")
+        else:
+            log(f"  FAIL {category}/{name}  rc={r.returncode}")
+    log(f"DONE  {made}/{len(MATRIX)} DXFs  total {time.time()-t0:.0f}s  ->  {out_root}")
     return made

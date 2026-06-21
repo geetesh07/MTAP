@@ -71,20 +71,41 @@ def run_selftest() -> None:
     print(text)
 
 
+def _child_prefix() -> list:
+    """Command prefix that re-invokes THIS program for a single-DXF child run."""
+    if getattr(sys, "frozen", False):
+        return [sys.executable]                 # the exe itself
+    return [sys.executable, os.path.abspath(__file__)]   # python main.py
+
+
 def run_gen_proposals(out_root: str) -> None:
-    """Headless: generate the full proposal-DXF matrix into out_root.
+    """Headless: generate the full proposal-DXF matrix into out_root, one fresh
+    child process per DXF (OpenCASCADE state must not accumulate in the exe).
     Usage:  MTAP.exe --gen-proposals "C:\\path\\to\\output_folder" """
     setup_logging()
     log = get_logger()
-    from app.dxf.proposal_batch import generate_matrix
+    from app.dxf.proposal_batch import generate_matrix_isolated
     log.info("Generating proposal matrix into %s", out_root)
-    n = generate_matrix(out_root, log=lambda m: (print(m), log.info(m)))
+    n = generate_matrix_isolated(out_root, _child_prefix(),
+                                 log=lambda m: (print(m), log.info(m)))
     print(f"\nGenerated {n} DXFs into {out_root}")
+
+
+def run_gen_one(name: str, out_path: str) -> None:
+    """Headless single-DXF generation (one matrix case). Fresh process per call."""
+    setup_logging()
+    from app.dxf.proposal_batch import generate_one
+    generate_one(name, out_path)
 
 
 def main() -> None:
     if "--selftest" in sys.argv:
         run_selftest()
+        return
+
+    if "--gen-one" in sys.argv:
+        i = sys.argv.index("--gen-one")
+        run_gen_one(sys.argv[i + 1], sys.argv[i + 2])
         return
 
     if "--gen-proposals" in sys.argv:
