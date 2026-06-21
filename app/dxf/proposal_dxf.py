@@ -21,30 +21,62 @@ import tempfile
 
 import ezdxf
 
-from OCP.gp import gp_Pnt, gp_Dir, gp_Ax1, gp_Ax2
-from OCP.BRepPrimAPI import (BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakeCone,
-                             BRepPrimAPI_MakeRevol)
-from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
-from OCP.BRepBuilderAPI import (BRepBuilderAPI_MakeEdge,
-                                BRepBuilderAPI_MakeWire,
-                                BRepBuilderAPI_MakeFace)
-from OCP.BRepOffsetAPI import BRepOffsetAPI_MakePipe
-from OCP.BRepMesh import BRepMesh_IncrementalMesh
-from OCP.BRep import BRep_Tool
-from OCP.TopLoc import TopLoc_Location
-from OCP.GeomAPI import GeomAPI_Interpolate
-from OCP.TColgp import TColgp_HArray1OfPnt
-from OCP.TopExp import TopExp_Explorer
-from OCP.TopAbs import TopAbs_FACE, TopAbs_REVERSED
-from OCP.TopoDS import TopoDS
-
 from app.engine.tools.drill import DrillProposalParams
 from app.utils.config import resource_path
 
 EPS = 1e-6
-_HELIX_PTS_PER_TURN = 120
-_FLUTE_RADIUS_FRAC  = 0.38
-_MESH_DEFLECTION    = 0.05   # mm — smaller = finer mesh
+_HELIX_PTS_PER_TURN = 24          # 24 pts/turn — smooth splines for DXF projection
+_HELIX_MIN_PTS      = 12          # minimum spine points per flute (floor for short bodies)
+_FLUTE_RADIUS_FRAC  = 0.72
+_MESH_DEFLECTION    = 0.12        # mm — coarser than 0.05; fine for DXF projection
+
+# ── solid cache ───────────────────────────────────────────────────────────────
+# Holds the last successfully-built OCC solid so repeat DXF/STEP requests with
+# the same parameters skip the 4-second OCC build entirely.
+# Format: (key_tuple, helix_pts, helix_min, solid_shape)
+# Only one entry — single-session, no memory growth concern.
+_solid_cache: tuple | None = None
+
+
+def _make_params_key(p: "DrillProposalParams") -> tuple:
+    """Hashable key for a DrillProposalParams + current quality constants."""
+    return (
+        round(p.cutting_diameter,    6),
+        round(p.shank_diameter,      6),
+        round(p.overall_length,      6),
+        round(p.shank_length,        6),
+        round(p.point_angle,         6),
+        round(p.helix_angle,         6),
+        p.n_flutes,
+        p.reinforcement,
+        round(p.reinforcement_angle, 6),
+        round(p.runout,              6),
+        _HELIX_PTS_PER_TURN,   # quality matters — preview solid ≠ DXF solid
+        _HELIX_MIN_PTS,
+    )
+
+
+def _build_solid_cached(p: "DrillProposalParams", *,
+                        _progress=None, _base_pct: int = 5, _end_pct: int = 58):
+    """Build or return a cached OCC solid for p at the current quality settings.
+
+    Cache hit saves ~4 s on repeat DXF/STEP requests with identical parameters.
+    Thread-safe because the UI disables all buttons while any worker is running
+    (only one worker thread can call this at a time).
+    """
+    global _solid_cache
+    key = _make_params_key(p)
+    if _solid_cache is not None and _solid_cache[0] == key:
+        if _progress:
+            _progress(_base_pct + (_end_pct - _base_pct) // 2,
+                      "Using cached solid (params unchanged)…")
+            _progress(_end_pct, "Cached solid ready.")
+        return _solid_cache[1]
+
+    solid = _build_solid(p, _progress=_progress,
+                         _base_pct=_base_pct, _end_pct=_end_pct)
+    _solid_cache = (key, solid)
+    return solid
 
 def _node_script() -> str:
     return resource_path(os.path.join("nodejs", "gen_proposal.mjs"))
@@ -55,7 +87,7 @@ def _node_script() -> str:
 def _make_helix_wire(z_start, length, radius, helix_angle_deg, phase_rad):
     pitch = math.pi * 2 * radius / math.tan(math.radians(helix_angle_deg))
     turns = length / pitch
-    n_pts = max(12, int(_HELIX_PTS_PER_TURN * turns))
+    n_pts = max(_HELIX_MIN_PTS, int(_HELIX_PTS_PER_TURN * turns))
 
     arr = TColgp_HArray1OfPnt(1, n_pts + 1)
     for i in range(n_pts + 1):
@@ -132,7 +164,49 @@ def _profile_points(p, rc, rs, chamfer):
     return out
 
 
-def _build_solid(p: DrillProposalParams):
+def _build_solid(p: DrillProposalParams, *,
+                 _progress=None, _base_pct: int = 5, _end_pct: int = 58):
+    """Build the revolve-then-flute-cut solid.
+
+    Progress is reported between _base_pct and _end_pct (inclusive).
+    _progress(percent, message) is called at each stage if provided.
+    """
+    def _p(pct, msg):
+        if _progress:
+            _progress(pct, msg)
+
+    # OCP imports are lazy so the GUI can open without loading OpenCASCADE.
+    # All OCP symbols used anywhere in this file are imported here once; the
+    # module-level helper functions (_make_helix_wire, _disk_profile, etc.) use
+    # these names via the module globals dict after this function sets them.
+    import sys as _sys
+    _g = _sys.modules[__name__].__dict__
+    if "gp_Pnt" not in _g:
+        from OCP.gp import gp_Pnt, gp_Dir, gp_Ax1, gp_Ax2
+        from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakeCone, BRepPrimAPI_MakeRevol
+        from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+        from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire, BRepBuilderAPI_MakeFace
+        from OCP.BRepOffsetAPI import BRepOffsetAPI_MakePipe
+        from OCP.BRepMesh import BRepMesh_IncrementalMesh
+        from OCP.BRep import BRep_Tool
+        from OCP.TopLoc import TopLoc_Location
+        from OCP.GeomAPI import GeomAPI_Interpolate
+        from OCP.TColgp import TColgp_HArray1OfPnt
+        from OCP.TopExp import TopExp_Explorer
+        from OCP.TopAbs import TopAbs_FACE, TopAbs_REVERSED
+        from OCP.TopoDS import TopoDS
+        _g.update({k: v for k, v in locals().items() if not k.startswith("_")})
+
+    # Re-bind to locals unconditionally — Python marks any name that appears in
+    # an assignment anywhere in the function as a local for the ENTIRE function.
+    # Without this the second call skips the if-block and hits UnboundLocalError.
+    gp_Pnt                 = _g["gp_Pnt"]
+    gp_Dir                 = _g["gp_Dir"]
+    gp_Ax1                 = _g["gp_Ax1"]
+    gp_Ax2                 = _g["gp_Ax2"]
+    BRepAlgoAPI_Cut        = _g["BRepAlgoAPI_Cut"]
+    BRepOffsetAPI_MakePipe = _g["BRepOffsetAPI_MakePipe"]
+
     rc = p.cutting_diameter / 2.0
     rs = p.effective_shank_diameter / 2.0
 
@@ -140,18 +214,38 @@ def _build_solid(p: DrillProposalParams):
     chamfer = min(0.1 * p.effective_shank_diameter,
                   rs * 0.8, max(p.shank_length * 0.5, 0.0))
 
+    _p(_base_pct, "Building drill profile…")
     profile = _profile_points(p, rc, rs, chamfer)
     solid   = _revolve_profile(profile)
+
+    # Budget: 5% of range for revolve, remainder split evenly across flutes
+    revolve_budget = max(5, (_end_pct - _base_pct) // 10)
+    flute_budget   = _end_pct - _base_pct - revolve_budget
 
     # Helical flute cuts — swept only along the Dc body region
     flute_r = rc * _FLUTE_RADIUS_FRAC
     helix_r = rc
-    cuts_done = 0
     from app.utils.logging_setup import get_logger as _log
     _logger = _log()
+
+    # Build all flute pipes first, then cut with a single compound Boolean.
+    # Sequential per-flute cuts accumulate topology complexity across iterations
+    # and are numerically fragile when Dc != D (the pipe end is co-planar with
+    # the abrupt step face at x_body_end, causing degenerate intersections on
+    # the second and later cuts).  One compound cut is both faster and more robust.
+    pipe_shapes = []
+    entry_z = p.point_length * 0.90      # enter 10% into tip cone
+    # Overshoot body end slightly so the pipe doesn't end exactly co-planar with
+    # the Dc->D step face when diameters differ — avoids OCC degenerate-face issue.
+    overshoot = min(2.0, p.body_length * 0.02)
+    entry_len = p.body_length + (p.point_length - entry_z) + overshoot
+
     for i in range(p.n_flutes):
+        pct = _base_pct + revolve_budget + int(flute_budget * i / p.n_flutes)
+        _p(pct, f"Building flute pipe {i + 1}/{p.n_flutes}…")
+
         phase = (2 * math.pi * i) / p.n_flutes
-        spine = _make_helix_wire(p.point_length, p.body_length, helix_r,
+        spine = _make_helix_wire(entry_z, entry_len, helix_r,
                                  p.helix_angle, phase)
 
         ha  = math.radians(p.helix_angle)
@@ -163,30 +257,49 @@ def _build_solid(p: DrillProposalParams):
 
         start_pt = gp_Pnt(helix_r * math.cos(phase),
                           helix_r * math.sin(phase),
-                          p.point_length)
+                          entry_z)
         prof = _disk_profile(start_pt, tang, flute_r)
 
         try:
             pipe = BRepOffsetAPI_MakePipe(spine, prof)
             pipe.Build()
-            if not pipe.IsDone():
+            if pipe.IsDone():
+                pipe_shapes.append(pipe.Shape())
+            else:
                 _logger.error("Flute %d/%d: MakePipe failed (IsDone=False)", i+1, p.n_flutes)
-                continue
-            cut = BRepAlgoAPI_Cut(solid, pipe.Shape())
-            cut.Build()
-            if not cut.IsDone():
-                _logger.error("Flute %d/%d: BRepAlgoAPI_Cut failed (IsDone=False)", i+1, p.n_flutes)
-                continue
-            solid = cut.Shape()
-            cuts_done += 1
         except Exception as exc:
-            _logger.error("Flute %d/%d: exception during cut: %s", i+1, p.n_flutes, exc)
+            _logger.error("Flute %d/%d: MakePipe exception: %s", i+1, p.n_flutes, exc)
 
-    if cuts_done < p.n_flutes:
+    if not pipe_shapes:
+        raise RuntimeError("No flute pipes built — check log for MakePipe errors.")
+    if len(pipe_shapes) < p.n_flutes:
         raise RuntimeError(
-            f"Only {cuts_done}/{p.n_flutes} flute cuts succeeded. "
-            f"The solid would have wrong flute count — aborting. "
+            f"Only {len(pipe_shapes)}/{p.n_flutes} flute pipes built — aborting. "
             f"Check log for per-flute error details.")
+
+    _p(_base_pct + revolve_budget + flute_budget, "Cutting all flutes (Boolean)…")
+
+    if len(pipe_shapes) == 1:
+        tool = pipe_shapes[0]
+    else:
+        from OCP.BRep import BRep_Builder as _BRep_Builder
+        from OCP.TopoDS import TopoDS_Compound as _TopoDS_Compound
+        bld = _BRep_Builder()
+        cmp = _TopoDS_Compound()
+        bld.MakeCompound(cmp)
+        for ps in pipe_shapes:
+            bld.Add(cmp, ps)
+        tool = cmp
+
+    cut = BRepAlgoAPI_Cut(solid, tool)
+    cut.SetRunParallel(True)
+    cut.SetFuzzyValue(1e-4)
+    cut.Build()
+    if not cut.IsDone():
+        raise RuntimeError(
+            f"Multi-flute Boolean cut failed (IsDone=False) for "
+            f"{len(pipe_shapes)} flutes — check log.")
+    solid = cut.Shape()
 
     return solid
 
@@ -246,6 +359,7 @@ def _project_via_nodejs(mesh_data: dict) -> dict:
         result = subprocess.run(
             [node, script, mesh_path, seg_path],
             capture_output=True, text=True, timeout=180,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
         if result.returncode != 0:
             raise RuntimeError(
@@ -355,16 +469,34 @@ def _add_dims(msp, p, rc, rs, h):
 
 # ══════════════════════════════════════════════════════════ public entry point ══
 
-def _build_geometry_dxf(p: DrillProposalParams, geom_path: str) -> dict:
+def _build_geometry_dxf(p: DrillProposalParams, geom_path: str, *,
+                         _progress=None, _mesh_cb=None) -> dict:
     """Write the geometry-only DXF (views + centrelines + dims). Returns anchor
-    points the AutoCAD stage needs to place the GD&T / datum blocks."""
+    points the AutoCAD stage needs to place the GD&T / datum blocks.
+
+    _progress(percent, message) is called at each pipeline stage.
+    _mesh_cb(verts_flat, indices_flat) is called once after tessellation so the
+    UI can display the 3D solid while accoreconsole finalizes the DXF.
+    """
+    def _p(pct, msg):
+        if _progress:
+            _progress(pct, msg)
+
     rc = p.cutting_diameter / 2.0
     rs = p.effective_shank_diameter / 2.0
 
-    solid     = _build_solid(p)
+    solid = _build_solid_cached(p, _progress=_progress, _base_pct=5, _end_pct=58)
+
+    _p(60, "Tessellating mesh…")
     mesh_data = _tessellate(solid)
+
+    if _mesh_cb:
+        _mesh_cb(mesh_data['v'], mesh_data['i'])
+
+    _p(65, "Projecting edges…")
     views     = _project_via_nodejs(mesh_data)
 
+    _p(78, "Writing DXF…")
     feature = max(p.overall_length, p.cutting_diameter * 4.0,
                   p.effective_shank_diameter * 4.0, 1.0)
     h   = max(feature * 0.018, 0.8)
@@ -398,20 +530,129 @@ def _build_geometry_dxf(p: DrillProposalParams, geom_path: str) -> dict:
     }
 
 
-def generate(params: DrillProposalParams, out_path: str) -> None:
+def preview_solid(params: DrillProposalParams, *,
+                  progress=None, mesh_cb=None) -> None:
+    """Build the drill solid and tessellate it — no DXF, no node.js, no AutoCAD.
+
+    Uses aggressively coarser helix/mesh settings than the DXF path so the
+    solid builds in roughly half the time.  Visual quality is sufficient for
+    interactive preview; the DXF path restores full quality.
+    """
+    def _p(pct, msg):
+        if progress:
+            progress(pct, msg)
+
     errs = params.validate()
     if errs:
         raise ValueError("\n".join(errs))
+
+    import sys as _sys
+    _mod = _sys.modules[__name__]
+
+    # Stash DXF-quality settings and switch to preview-quality ones.
+    # Safe: buttons are disabled while any worker runs so no concurrent access.
+    _orig_helix_pts  = _mod._HELIX_PTS_PER_TURN
+    _orig_helix_min  = _mod._HELIX_MIN_PTS
+    _orig_deflection = _mod._MESH_DEFLECTION
+    _mod._HELIX_PTS_PER_TURN = 16   # 8 was too coarse — 9-pt spline distorts 2nd pipe shape
+    _mod._HELIX_MIN_PTS      = 10   # was 6
+    _mod._MESH_DEFLECTION    = 0.18 # coarser than DXF (0.12) but not so coarse it hides flutes
+
+    try:
+        _p(2, "Starting…")
+        solid = _build_solid(params, _progress=progress, _base_pct=5, _end_pct=88)
+
+        _p(90, "Tessellating mesh…")
+        mesh_data = _tessellate(solid)
+
+        if mesh_cb:
+            mesh_cb(mesh_data['v'], mesh_data['i'])
+
+        _p(100, "Done")
+
+    finally:
+        # Always restore — even if _build_solid raises
+        _mod._HELIX_PTS_PER_TURN = _orig_helix_pts
+        _mod._HELIX_MIN_PTS      = _orig_helix_min
+        _mod._MESH_DEFLECTION    = _orig_deflection
+
+
+def generate_step(params: DrillProposalParams, step_path: str, *,
+                  progress=None) -> None:
+    """Build the drill solid and export it as a STEP (AP203) file.
+
+    This is independent of the DXF pipeline — call it to get a 3D model file
+    that any CAD system can import.
+    """
+    def _p(pct, msg):
+        if progress:
+            progress(pct, msg)
+
+    errs = params.validate()
+    if errs:
+        raise ValueError("\n".join(errs))
+
+    _p(2, "Starting STEP export…")
+    solid = _build_solid_cached(params, _progress=progress, _base_pct=5, _end_pct=88)
+
+    _p(90, "Writing STEP file…")
+    import sys as _sys
+    _g = _sys.modules[__name__].__dict__
+    if "STEPControl_Writer" not in _g:
+        from OCP.STEPControl import STEPControl_Writer, STEPControl_AsIs
+        from OCP.Interface import Interface_Static
+        _g.update({k: v for k, v in locals().items() if not k.startswith("_")})
+
+    STEPControl_Writer  = _g["STEPControl_Writer"]
+    STEPControl_AsIs    = _g["STEPControl_AsIs"]
+    Interface_Static    = _g["Interface_Static"]
+
+    writer = STEPControl_Writer()
+    Interface_Static.SetCVal_s("write.step.schema", "AP203")
+    writer.Transfer(solid, STEPControl_AsIs)
+    status = writer.Write(step_path)
+    if status != 1:
+        raise RuntimeError(
+            f"STEP write failed (OCC status={status}). "
+            f"Check that the output directory exists and is writable.")
+
+    _p(100, "STEP export complete")
+
+
+def generate(params: DrillProposalParams, out_path: str, *,
+             progress=None, mesh_cb=None) -> None:
+    """Generate the proposal DXF for the given parameters.
+
+    Args:
+        params:   Drill parameters (already validated by caller, re-validated here).
+        out_path: Destination .dxf file path.
+        progress: Optional callable(percent: int, message: str) called at each stage.
+        mesh_cb:  Optional callable(verts: list, indices: list) called once after
+                  tessellation so the UI can display the 3D model while AutoCAD
+                  is still finalising the DXF in the background stage.
+    """
+    def _p(pct, msg):
+        if progress:
+            progress(pct, msg)
+
+    errs = params.validate()
+    if errs:
+        raise ValueError("\n".join(errs))
+
+    _p(2, "Starting…")
 
     # Stage 1 — geometry DXF (pure ezdxf)
     fd, geom_path = tempfile.mkstemp(suffix="_geom.dxf")
     os.close(fd)
     try:
-        anchors = _build_geometry_dxf(params, geom_path)
+        anchors = _build_geometry_dxf(params, geom_path,
+                                       _progress=progress, _mesh_cb=mesh_cb)
         # Stage 2 — AutoCAD inserts the real DWG blocks/template and native-saves
         # the result so it opens read-WRITE (see memory dxf-open-readwrite).
+        _p(82, "Finalizing in AutoCAD…")
         from app.dxf.proposal_acad import finalize_with_acad
         finalize_with_acad(geom_path, params, anchors, out_path)
+        _p(100, "Done")
     finally:
         try:
             os.remove(geom_path)

@@ -70,6 +70,15 @@ QWidget {
 #PrimaryButton:pressed { background-color: #C2693F; }
 #PrimaryButton:disabled { background-color: #2E2A22; color: #5C5648; }
 
+#SecondaryButton {
+    background-color: #2E2A22; color: #D9C8A8;
+    border: 1px solid #4A443A; border-radius: 10px;
+    padding: 13px 24px; font-size: 13px; font-weight: 600; letter-spacing: 1px;
+}
+#SecondaryButton:hover { background-color: #3A342A; border-color: #D97757; }
+#SecondaryButton:pressed { background-color: #251F18; }
+#SecondaryButton:disabled { background-color: #1E1B16; color: #5C5648; border-color: #2E2A22; }
+
 /* ---- Input fields ---- */
 QLineEdit {
     background-color: #2A2620; color: #ECE6DA;

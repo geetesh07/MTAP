@@ -1,16 +1,19 @@
 """
 proposal_acad.py — AutoCAD finalize stage for the Proposal Drawing.
 
-ezdxf cannot read the user's DWG blocks, and ezdxf-authored DXFs open read-only
-in AutoCAD.  So the final step runs the geometry DXF through AutoCAD's headless
-engine (accoreconsole.exe):
+Two finalization paths are available:
 
-  * insert the REAL DWG blocks  MTAP_GDT + MTAP_DATUM (runout) and wrap the whole
-    drawing in MTAP_TEMPLATE (auto-scaled, so it never overlaps the model)
-  * DXFOUT the result — a file authored by AutoCAD itself opens read-WRITE.
+  1. finalize_with_ezdxf()  — pure-Python, no AutoCAD required.
+     Reads the DXF versions of the blocks (autocad/blocks/*.dxf), imports them
+     with ezdxf's xref.Loader, inserts GDT/DATUM/TEMPLATE, and saves directly.
+     Fast (~0 s overhead).  Used when DXF block files exist.
 
-Reuses the Blank mode's debugged LISP library (place-template, ins-block,
-set-attrib, range-bbox, load-block) verbatim — see app/dxf/lsp_writer.py.
+  2. finalize_with_acad()   — legacy accoreconsole path.
+     Requires AutoCAD installed.  Loads DWG blocks via LISP, runs DXFOUT so the
+     output file is authored by AutoCAD itself (opens read-WRITE in AutoCAD).
+     Fallback when DXF blocks are absent.
+
+finalize_with_acad() tries path 1 first; path 2 is the fallback.
 """
 
 import glob
@@ -26,6 +29,7 @@ from app.dxf.lsp_writer import (
     _BLOCK_TXT_RATIO, _GDT_REF_H, _DAT_REF_H,
 )
 from app.utils.logging_setup import get_logger
+from app.utils.config import resource_path
 
 log = get_logger()
 
@@ -37,6 +41,14 @@ _REQUIRED_BLOCKS_GDT    = {"MTAP_GDT", "MTAP_DATUM"}
 
 def _find_accoreconsole() -> str | None:
     """Locate accoreconsole.exe from any installed AutoCAD, newest first."""
+    # Explicit known paths first — glob can silently fail inside frozen exes.
+    known_years = range(2030, 2018, -1)
+    for root in (r"C:\Program Files\Autodesk", r"C:\Program Files (x86)\Autodesk"):
+        for year in known_years:
+            p = os.path.join(root, f"AutoCAD {year}", "accoreconsole.exe")
+            if os.path.isfile(p):
+                return p
+    # Glob fallback for non-standard installs
     roots = [
         r"C:\Program Files\Autodesk",
         r"C:\Program Files (x86)\Autodesk",
@@ -46,7 +58,6 @@ def _find_accoreconsole() -> str | None:
         hits += glob.glob(os.path.join(root, "AutoCAD *", "accoreconsole.exe"))
     if not hits:
         return None
-    # newest AutoCAD year wins (lexical sort puts 2024 after 2020)
     hits.sort(reverse=True)
     return hits[0]
 
@@ -145,15 +156,135 @@ def _verify_output(out_path: str, require_gdt: bool) -> None:
             f"AutoCAD LISP likely failed partway — check log for LISP errors.")
 
 
+# ── MTAP_WINDOW rectangle pre-measured from MTAP_TEMPLATE.dxf ────────────────
+# The LWPOLYLINE on layer MTAP_WINDOW in the template block defines the area
+# reserved for the drill drawing.  Scale + placement of the template is computed
+# so the drill drawing fills MARGIN fraction of this window.
+_TPL_WIN_W  = 712.149    # window width  in template local coords (mm)
+_TPL_WIN_H  = 404.821    # window height in template local coords (mm)
+_TPL_WIN_CX = 387.559    # window center X
+_TPL_WIN_CY = 267.065    # window center Y
+_TPL_MARGIN = 0.70       # drawing fills 70 % of the window (matches LISP)
+
+
+def _dxf_blocks_dir() -> str | None:
+    """Return the blocks dir if all DXF block files exist, else None."""
+    bd = resource_path(os.path.join("autocad", "blocks"))
+    needed = ("MTAP_GDT.dxf", "MTAP_DATUM.dxf", "MTAP_TEMPLATE.dxf")
+    if all(os.path.isfile(os.path.join(bd, f)) for f in needed):
+        return bd
+    return None
+
+
+def finalize_with_ezdxf(geom_dxf: str, p: DrillProposalParams,
+                         anchors: dict, out_path: str) -> None:
+    """Insert blocks and template using pure ezdxf — no AutoCAD required.
+
+    Imports each DXF block file's model-space content as a named block via
+    ezdxf's xref.Loader, inserts the blocks at the computed anchors, scales
+    and places MTAP_TEMPLATE around the drawing, then saves.
+    """
+    from ezdxf import xref, bbox as _bbox
+
+    blocks_dir = LspWriter._resolve_blocks_dir(None)
+
+    doc = ezdxf.readfile(geom_dxf)
+    msp = doc.modelspace()
+
+    def _import_as_block(dxf_path: str, block_name: str) -> None:
+        if block_name in doc.blocks:
+            return
+        src = ezdxf.readfile(dxf_path)
+        # Move model-space entities into a named block within the source doc
+        src_blk = src.blocks.new(block_name)
+        for entity in list(src.modelspace()):
+            src.modelspace().move_to_layout(entity, src_blk)
+        # Import the named block (and all its sub-block dependencies) into doc
+        loader = xref.Loader(src, doc, conflict_policy=xref.ConflictPolicy.KEEP)
+        loader.load_block_layout(src_blk)
+        for blk in src.blocks:
+            if not blk.name.startswith("*") and blk.name != block_name:
+                loader.load_block_layout(blk)
+        loader.execute()
+
+    _import_as_block(os.path.join(blocks_dir, "MTAP_GDT.dxf"),      "MTAP_GDT")
+    _import_as_block(os.path.join(blocks_dir, "MTAP_DATUM.dxf"),     "MTAP_DATUM")
+    _import_as_block(os.path.join(blocks_dir, "MTAP_TEMPLATE.dxf"),  "MTAP_TEMPLATE")
+
+    # Ensure annotation layer
+    if "MTAP-GDT" not in doc.layers:
+        doc.layers.new("MTAP-GDT", dxfattribs={"color": 2})
+
+    # Scale factors (same formula as LISP)
+    feature   = max(p.overall_length, p.cutting_diameter * 4.0,
+                    p.effective_shank_diameter * 4.0, 1.0)
+    block_txt = feature * 0.0154 * _BLOCK_TXT_RATIO
+    scale_gdt = block_txt / _GDT_REF_H
+    scale_dat = block_txt / _DAT_REF_H
+
+    if p.runout > 0:
+        gx, gy = anchors["gdt_ins"]
+        dx, dy = anchors["dat_ins"]
+        gdt_ref = msp.add_blockref(
+            "MTAP_GDT", (gx, gy),
+            dxfattribs={"layer": "MTAP-GDT", "xscale": scale_gdt, "yscale": scale_gdt},
+        )
+        gdt_ref.add_auto_attribs({"VAL": f"{p.runout:.3f}", "A": "A"})
+        dat_ref = msp.add_blockref(
+            "MTAP_DATUM", (dx, dy),
+            dxfattribs={"layer": "MTAP-GDT", "xscale": scale_dat, "yscale": scale_dat},
+        )
+        dat_ref.add_auto_attribs({"-A-": "A"})
+
+    # Compute bounding box of all existing geometry for template placement
+    bb = _bbox.extents(msp, fast=True)
+    if bb.is_empty:
+        extmin = (0.0, -p.cutting_diameter / 2)
+        extmax = (p.overall_length, p.cutting_diameter / 2)
+    else:
+        extmin = (bb.extmin.x, bb.extmin.y)
+        extmax = (bb.extmax.x, bb.extmax.y)
+
+    tw  = extmax[0] - extmin[0]
+    th  = extmax[1] - extmin[1]
+    tcx = (extmin[0] + extmax[0]) / 2.0
+    tcy = (extmin[1] + extmax[1]) / 2.0
+
+    s   = max(tw / (_TPL_WIN_W * _TPL_MARGIN),
+              th / (_TPL_WIN_H * _TPL_MARGIN), 1e-6)
+    ipx = tcx - s * _TPL_WIN_CX
+    ipy = tcy - s * _TPL_WIN_CY
+
+    msp.add_blockref("MTAP_TEMPLATE", (ipx, ipy), dxfattribs={"xscale": s, "yscale": s})
+
+    # Header fix required for AutoCAD read-write compatibility
+    doc.header["$DIMLFAC"] = 1.0
+
+    doc.saveas(out_path)
+    log.info("finalize_with_ezdxf: saved %s  (template scale=%.4f)", out_path, s)
+
+    _verify_output(out_path, require_gdt=(p.runout > 0))
+
+
 def finalize_with_acad(geom_dxf: str, p: DrillProposalParams,
                        anchors: dict, out_path: str,
                        require_acad: bool = False) -> None:
-    """Insert blocks/template via accoreconsole and write a read-write DXF.
+    """Insert blocks/template and write the final DXF.
+
+    Prefers the pure-ezdxf path when DXF block files are present (fast, no
+    AutoCAD required).  Falls back to accoreconsole when only DWG blocks are
+    available.
 
     Args:
-        require_acad: if True, raise instead of falling back when AutoCAD is
-            absent (use this in batch / CLI mode so failures are visible).
+        require_acad: if True, skip the ezdxf path and require accoreconsole
+            (use in batch/CLI mode to guarantee AutoCAD-authored output).
     """
+    # Fast path: DXF blocks available → no accoreconsole needed
+    if not require_acad and _dxf_blocks_dir() is not None:
+        log.info("finalize_with_acad: DXF blocks found — using ezdxf path (no AutoCAD).")
+        finalize_with_ezdxf(geom_dxf, p, anchors, out_path)
+        return
+
     acc = _find_accoreconsole()
     if not acc:
         msg = ("accoreconsole not found — cannot insert real blocks / template. "
@@ -198,6 +329,7 @@ def finalize_with_acad(geom_dxf: str, p: DrillProposalParams,
         res = subprocess.run(
             [acc, "/i", geom_dxf, "/s", scr_path],
             capture_output=True, timeout=180,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
         stdout_raw = res.stdout or b""
         # accoreconsole emits UTF-16LE; fall back to latin-1 if that fails

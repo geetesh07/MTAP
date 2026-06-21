@@ -65,17 +65,17 @@ const sideLine = project(sideGeom);
 // segs: [x1, z1, x2, z2] (raw from projection; Python swaps to [z1,x1,z2,x2])
 const sideSegs = extractSegs(sideLine);
 
-// ── Front view: project along +Z (tip → shank direction) ─────────────────────
-// Rotate mesh by Rx(-90°): [x,y,z] → [x, z, -y]
-// After rotation: original +Z maps to +Y  →  ProjectionGenerator sees drill end-on
-// Output: (x', 0, z') where x'=orig_X, z'=-orig_Y
-// DXF: (x', -z') = (orig_X, orig_Y)  ← circle of cutting diameter
-const rotFront = new Matrix4().makeRotationX(-Math.PI / 2);
+// ── Front view: project from TIP end (looking along +Z, tip→shank) ──────────
+// Rx(+90°): [x,y,z] → [x, -z, y]  — tip (z≈0) lands at y≈0 (nearest camera),
+// shank (z≈OAL) lands at y≈-OAL (far).  ProjectionGenerator looks from +Y so
+// the tip face is the closest surface — we see cutting geometry, not shank.
+// In projection plane: x'=orig_X, z'=orig_Y  →  DXF: (orig_X, orig_Y) ✓
+const rotFront = new Matrix4().makeRotationX(Math.PI / 2);
 const frontGeom = buildGeometry(v, i, rotFront);
 const frontLine = project(frontGeom);
 const frontRaw  = extractSegs(frontLine);
-// Convert to (orig_X, orig_Y): x' stays, y = -z'
-const frontSegs = frontRaw.map(([x1, z1, x2, z2]) => [x1, -z1, x2, -z2]);
+// Convert to (orig_X, orig_Y): with Rx(+90°), x'=x_orig, z'=y_orig
+const frontSegs = frontRaw.map(([x1, z1, x2, z2]) => [x1, z1, x2, z2]);
 
 writeFileSync(outPath, JSON.stringify({ side: sideSegs, front: frontSegs }));
 console.log(`side: ${sideSegs.length}  front: ${frontSegs.length}`);

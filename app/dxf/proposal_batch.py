@@ -111,7 +111,8 @@ def generate_matrix_isolated(out_root: str, child_prefix: list, log=print) -> in
         for attempt in range(1, 4):
             try:
                 r = subprocess.run(child_prefix + ["--gen-one", name, out],
-                                   timeout=300)
+                                   timeout=300,
+                                   creationflags=subprocess.CREATE_NO_WINDOW)
             except subprocess.TimeoutExpired:
                 log(f"  TIMEOUT {category}/{name} (attempt {attempt})")
                 continue
