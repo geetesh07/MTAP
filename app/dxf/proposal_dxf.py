@@ -146,6 +146,9 @@ def _build_solid(p: DrillProposalParams):
     # Helical flute cuts — swept only along the Dc body region
     flute_r = rc * _FLUTE_RADIUS_FRAC
     helix_r = rc
+    cuts_done = 0
+    from app.utils.logging_setup import get_logger as _log
+    _logger = _log()
     for i in range(p.n_flutes):
         phase = (2 * math.pi * i) / p.n_flutes
         spine = _make_helix_wire(p.point_length, p.body_length, helix_r,
@@ -166,13 +169,24 @@ def _build_solid(p: DrillProposalParams):
         try:
             pipe = BRepOffsetAPI_MakePipe(spine, prof)
             pipe.Build()
-            if pipe.IsDone():
-                cut = BRepAlgoAPI_Cut(solid, pipe.Shape())
-                cut.Build()
-                if cut.IsDone():
-                    solid = cut.Shape()
-        except Exception:
-            pass
+            if not pipe.IsDone():
+                _logger.error("Flute %d/%d: MakePipe failed (IsDone=False)", i+1, p.n_flutes)
+                continue
+            cut = BRepAlgoAPI_Cut(solid, pipe.Shape())
+            cut.Build()
+            if not cut.IsDone():
+                _logger.error("Flute %d/%d: BRepAlgoAPI_Cut failed (IsDone=False)", i+1, p.n_flutes)
+                continue
+            solid = cut.Shape()
+            cuts_done += 1
+        except Exception as exc:
+            _logger.error("Flute %d/%d: exception during cut: %s", i+1, p.n_flutes, exc)
+
+    if cuts_done < p.n_flutes:
+        raise RuntimeError(
+            f"Only {cuts_done}/{p.n_flutes} flute cuts succeeded. "
+            f"The solid would have wrong flute count — aborting. "
+            f"Check log for per-flute error details.")
 
     return solid
 
@@ -208,8 +222,19 @@ def _tessellate(shape) -> dict:
 
 # ══════════════════════════════════════════════════════════ Node.js projection ══
 
+def _resolve_node() -> str:
+    """Return the absolute path to node.exe (prevents PATH-hijack on Windows)."""
+    import shutil
+    node = shutil.which("node")
+    if not node:
+        raise RuntimeError(
+            "Node.js not found on PATH. Install Node.js to generate proposal DXFs.")
+    return os.path.abspath(node)
+
+
 def _project_via_nodejs(mesh_data: dict) -> dict:
     script = os.path.normpath(_node_script())
+    node   = _resolve_node()
 
     with tempfile.NamedTemporaryFile(mode='w', suffix='.json',
                                      delete=False, encoding='utf-8') as mf:
@@ -219,7 +244,7 @@ def _project_via_nodejs(mesh_data: dict) -> dict:
 
     try:
         result = subprocess.run(
-            ['node', script, mesh_path, seg_path],
+            [node, script, mesh_path, seg_path],
             capture_output=True, text=True, timeout=180,
         )
         if result.returncode != 0:
@@ -316,6 +341,7 @@ def _add_dims(msp, p, rc, rs, h):
         try:
             # p1/p2 ordered so the CCW sweep p1->p2 is the INCLUDED angle
             # (e.g. 140), not the reflex (220).
+            from app.utils.logging_setup import get_logger as _log2
             ang = msp.add_angular_dim_3p(
                 base=(rc * 1.5, 0.0),
                 center=(0, 0), p1=(p.x_point_base, -rc), p2=(p.x_point_base, rc),
@@ -323,8 +349,8 @@ def _add_dims(msp, p, rc, rs, h):
                 override={**ov, "dimaunit": 0, "dimadec": 1},
                 dxfattribs={"layer": "DIM"})
             ang.render()
-        except Exception:
-            pass
+        except Exception as exc:
+            _log2().warning("Angular point-angle dimension failed (non-fatal): %s", exc)
 
 
 # ══════════════════════════════════════════════════════════ public entry point ══

@@ -8,11 +8,10 @@ from PyQt6.QtWidgets import (
     QFileDialog, QMessageBox, QScrollArea, QGroupBox, QGridLayout,
     QSizePolicy, QCheckBox,
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QThread, pyqtSlot
 from PyQt6.QtGui import QFont
 
 from app.engine.tools.drill import DrillProposalParams
-from app.dxf.proposal_dxf import generate as generate_dxf
 from app.ui.widgets import NoScrollDoubleSpinBox, NoScrollComboBox
 from app.utils.logging_setup import get_logger
 
@@ -21,11 +20,37 @@ log = get_logger()
 _DEFAULT_DIR = os.path.join(os.path.expanduser("~"), "MTAP", "proposals")
 
 
+class _GenerateWorker(QThread):
+    """Runs DXF generation in a background thread so the UI stays responsive."""
+
+    finished  = pyqtSignal(str)          # emits out_path on success
+    errored   = pyqtSignal(str, str)     # emits (error_message, traceback)
+
+    def __init__(self, params: DrillProposalParams, out_path: str):
+        super().__init__()
+        self._params   = params
+        self._out_path = out_path
+
+    def run(self) -> None:
+        try:
+            from app.dxf.proposal_dxf import generate as generate_dxf
+            generate_dxf(self._params, self._out_path)
+            self.finished.emit(self._out_path)
+        except PermissionError as exc:
+            self.errored.emit(
+                f"Permission denied — close the file in AutoCAD first.\n\n{exc}",
+                traceback.format_exc(),
+            )
+        except Exception as exc:
+            self.errored.emit(str(exc), traceback.format_exc())
+
+
 class ProposalScreen(QWidget):
     back_requested = pyqtSignal()
 
     def __init__(self):
         super().__init__()
+        self._worker: _GenerateWorker | None = None
         self._build_ui()
 
     # ═══════════════════════════════════════════════════════════════ UI build ══
@@ -198,14 +223,14 @@ class ProposalScreen(QWidget):
         self._status.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self._status.setWordWrap(True)
 
-        btn = QPushButton("GENERATE DXF")
-        btn.setObjectName("PrimaryButton")
-        btn.setFixedWidth(180)
-        btn.setFixedHeight(40)
-        btn.clicked.connect(self._on_generate)
+        self._btn = QPushButton("GENERATE DXF")
+        self._btn.setObjectName("PrimaryButton")
+        self._btn.setFixedWidth(180)
+        self._btn.setFixedHeight(40)
+        self._btn.clicked.connect(self._on_generate)
 
         lo.addWidget(self._status)
-        lo.addWidget(btn)
+        lo.addWidget(self._btn)
         return bar
 
     # ─── logic ────────────────────────────────────────────────────────────────
@@ -235,6 +260,10 @@ class ProposalScreen(QWidget):
         p.derive()
         return p
 
+    def _set_busy(self, busy: bool) -> None:
+        self._btn.setEnabled(not busy)
+        self._btn.setText("Generating…" if busy else "GENERATE DXF")
+
     def _on_generate(self) -> None:
         try:
             params = self._read_params()
@@ -255,32 +284,46 @@ class ProposalScreen(QWidget):
             if not path:
                 return
 
-            self._status.setText("Generating proposal DXF…")
-            self.repaint()
+            self._status.setText("Generating proposal DXF — this may take 30–60 s…")
+            self._set_busy(True)
 
-            generate_dxf(params, path)
+            self._worker = _GenerateWorker(params, path)
+            self._worker.finished.connect(self._on_done)
+            self._worker.errored.connect(self._on_error)
+            self._worker.start()
 
-            self._status.setText(f"Saved: {path}")
-            log.info("Proposal DXF: %s", path)
+        except Exception:
+            tb = traceback.format_exc()
+            log.error("Proposal DXF setup failed:\n%s", tb)
+            self._status.setText("Error — see log for details.")
+            QMessageBox.critical(self, "Error", tb)
 
-            reply = QMessageBox.question(
-                self, "Open DXF?",
-                f"DXF saved.\n\nOpen {os.path.basename(path)} now?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            )
-            if reply == QMessageBox.StandardButton.Yes:
-                os.startfile(path)
+    @pyqtSlot(str)
+    def _on_done(self, path: str) -> None:
+        self._set_busy(False)
+        self._status.setText(f"Saved: {path}")
+        log.info("Proposal DXF: %s", path)
 
-        except PermissionError as e:
-            log.error("Proposal DXF permission error: %s", e)
+        reply = QMessageBox.question(
+            self, "Open DXF?",
+            f"DXF saved.\n\nOpen {os.path.basename(path)} now?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            os.startfile(path)
+
+    @pyqtSlot(str, str)
+    def _on_error(self, message: str, tb: str) -> None:
+        self._set_busy(False)
+        log.error("Proposal DXF failed:\n%s", tb)
+
+        if "Permission denied" in message or "PermissionError" in message:
             self._status.setText("Permission denied — close the file in AutoCAD first.")
             QMessageBox.warning(
                 self, "File in Use",
                 f"Cannot save — the file is open in another application (AutoCAD).\n\n"
-                f"Close the DXF in AutoCAD, then click Generate again.\n\n{e}",
+                f"Close the DXF in AutoCAD, then click Generate again.\n\n{message}",
             )
-        except Exception:
-            tb = traceback.format_exc()
-            log.error("Proposal DXF failed:\n%s", tb)
+        else:
             self._status.setText("Error — see log for details.")
             QMessageBox.critical(self, "Error", tb)

@@ -343,10 +343,9 @@ class DrillProposalParams(BaseTool):
         else:
             self.reinforcement_length = 0.0
 
-        self.body_length = max(
-            0.0,
+        self.body_length = (
             self.overall_length - self.point_length
-            - self.reinforcement_length - self.shank_length,
+            - self.reinforcement_length - self.shank_length
         )
 
         if self.flute_length_override is None:
