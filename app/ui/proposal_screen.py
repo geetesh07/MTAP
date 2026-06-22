@@ -130,6 +130,36 @@ class _GenerateWorker(QThread):
             self.errored.emit(str(exc), traceback.format_exc())
 
 
+# ═════════════════════════════════════════════════════════ AutoCAD link worker ══
+
+class _LinkWorker(QThread):
+    """Builds the drill geometry and writes the DMTAP link file.
+    Same heavy pipeline as the DXF path (solid + tessellate + edge projection),
+    but the output is a native-AutoCAD LISP draw — no DXF for AutoCAD to open.
+    """
+    finished = pyqtSignal(str)    # link_path on success
+    errored  = pyqtSignal(str, str)
+    progress = pyqtSignal(int, str)
+
+    def __init__(self, params: DrillProposalParams, link_path: str,
+                 meta: dict | None = None):
+        super().__init__()
+        self._params    = params
+        self._link_path = link_path
+        self._meta      = meta or {}
+
+    def run(self) -> None:
+        def _on_progress(pct: int, msg: str) -> None:
+            self.progress.emit(pct, msg)
+        try:
+            from app.dxf.proposal_lsp import generate_proposal_link
+            generate_proposal_link(self._params, self._link_path,
+                                   meta=self._meta, progress=_on_progress)
+            self.finished.emit(self._link_path)
+        except Exception as exc:
+            self.errored.emit(str(exc), traceback.format_exc())
+
+
 # ═════════════════════════════════════════════════════════ STEP worker ══
 
 class _StepWorker(QThread):
@@ -163,6 +193,7 @@ class ProposalScreen(QWidget):
         self._worker:         _GenerateWorker | None = None
         self._step_worker:    _StepWorker     | None = None
         self._preview_worker: _PreviewWorker  | None = None
+        self._link_worker:    _LinkWorker     | None = None
         self._gen_start: float = 0.0
         self._viewer = None   # DrillPreview3D or None if GL unavailable
 
@@ -428,6 +459,14 @@ class ProposalScreen(QWidget):
         self._step_btn.setFixedHeight(40)
         self._step_btn.clicked.connect(self._on_export_step)
 
+        # Primary AutoCAD path: write the DMTAP link and draw directly in AutoCAD
+        # (no DXF file — avoids the AutoCAD crash on opening the generated DXF).
+        self._link_btn = QPushButton("AUTOCAD LINK")
+        self._link_btn.setObjectName("PrimaryButton")
+        self._link_btn.setFixedWidth(150)
+        self._link_btn.setFixedHeight(40)
+        self._link_btn.clicked.connect(self._on_autocad_link)
+
         # Tertiary: full DXF with AutoCAD finalization
         self._btn = QPushButton("GENERATE DXF")
         self._btn.setObjectName("SecondaryButton")
@@ -440,6 +479,7 @@ class ProposalScreen(QWidget):
         row.addWidget(self._elapsed_label)
         row.addWidget(self._preview_btn)
         row.addWidget(self._step_btn)
+        row.addWidget(self._link_btn)
         row.addWidget(self._btn)
         lo.addLayout(row)
 
@@ -473,13 +513,15 @@ class ProposalScreen(QWidget):
         return p
 
     def _set_busy(self, busy: bool, mode: str = "preview") -> None:
-        # Disable all three buttons while any operation is running
+        # Disable all buttons while any operation is running
         self._preview_btn.setEnabled(not busy)
         self._step_btn.setEnabled(not busy)
+        self._link_btn.setEnabled(not busy)
         self._btn.setEnabled(not busy)
 
         self._preview_btn.setText("Building…"   if (busy and mode == "preview") else "PREVIEW 3D")
         self._step_btn.setText("Exporting…"     if (busy and mode == "step")    else "EXPORT STEP")
+        self._link_btn.setText("Linking…"       if (busy and mode == "link")    else "AUTOCAD LINK")
         self._btn.setText("Generating…"         if (busy and mode == "dxf")     else "GENERATE DXF")
 
     def _start_progress(self) -> None:
@@ -736,3 +778,66 @@ class ProposalScreen(QWidget):
         log.error("Preview failed:\n%s", tb)
         self._stage_label.setText("Preview failed — see log.")
         QMessageBox.critical(self, "Preview Error", tb)
+
+    # ─── AutoCAD link (DMTAP direct draw) ──────────────────────────────────────
+
+    def _on_autocad_link(self) -> None:
+        try:
+            params = self._read_params()
+            errs = params.validate()
+            if errs:
+                self._stage_label.setText("⚠ " + "  ·  ".join(errs))
+                return
+
+            from app.utils.config import AUTOCAD_LINK_DIR, AUTOCAD_LINK_PATH
+            os.makedirs(AUTOCAD_LINK_DIR, exist_ok=True)
+
+            meta = {
+                "title": (f"DRILL  Dc{params.cutting_diameter:g} x "
+                          f"D{params.effective_shank_diameter:g} x "
+                          f"OAL{params.overall_length:g}  {params.n_flutes}FL"),
+                "date":  time.strftime("%d/%m/%y"),
+            }
+
+            self._set_busy(True, "link")
+            self._start_progress()
+
+            self._link_worker = _LinkWorker(params, AUTOCAD_LINK_PATH, meta)
+            self._link_worker.finished.connect(self._on_link_done)
+            self._link_worker.errored.connect(self._on_link_error)
+            self._link_worker.progress.connect(self._on_progress)
+            self._link_worker.start()
+
+        except Exception:
+            tb = traceback.format_exc()
+            log.error("AutoCAD link setup failed:\n%s", tb)
+            self._stage_label.setText("Error — see log for details.")
+            QMessageBox.critical(self, "Error", tb)
+
+    @pyqtSlot(str)
+    def _on_link_done(self, path: str) -> None:
+        elapsed = self._stop_progress()
+        self._set_busy(False, "link")
+        self._progress_bar.setValue(100)
+        self._stage_label.setText("AutoCAD link ready → type DMTAP in AutoCAD")
+        self._elapsed_label.setText(f"{elapsed:.1f}s")
+        log.info("Proposal AutoCAD link: %s", path)
+        QMessageBox.information(
+            self, "MTAP — AutoCAD Link",
+            "The link is ready.\n\n"
+            "Switch to AutoCAD and type:  DMTAP\n\n"
+            "It draws this drill directly — side view, end view, dimensions,\n"
+            "GD&T and the title block — at 1:1 scale, no DXF file.\n\n"
+            "(First time only: run SET UP AUTOCAD on the Blank screen, or load\n"
+            "autocad\\mtap.lsp via APPLOAD so DMTAP is always available.)",
+        )
+
+    @pyqtSlot(str, str)
+    def _on_link_error(self, message: str, tb: str) -> None:
+        elapsed = self._stop_progress()
+        self._set_busy(False, "link")
+        self._progress_bar.setVisible(False)
+        self._elapsed_label.setText(f"{elapsed:.1f}s" if elapsed > 0 else "")
+        log.error("AutoCAD link failed:\n%s", tb)
+        self._stage_label.setText("AutoCAD link failed — see log.")
+        QMessageBox.critical(self, "Error", tb)
