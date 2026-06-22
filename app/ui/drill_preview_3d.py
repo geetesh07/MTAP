@@ -260,14 +260,7 @@ class DrillPreview3D(QOpenGLWidget):
         self._prog.setUniformValue("uMVP",   proj * view * model)
         self._prog.setUniformValue("uModel", model)
 
-        log.debug("DrillPreview3D.paintGL: drawing %d verts  w=%d h=%d  "
-                  "scale=%.1f dist=%.2f az=%.1f el=%.1f  "
-                  "center=(%.2f,%.2f,%.2f)",
-                  self._n_verts, w, h, self._scale, self._dist,
-                  self._azim, self._elev,
-                  self._center.x(), self._center.y(), self._center.z())
         _glDrawArrays(_GL_TRIANGLES, 0, self._n_verts)
-        log.debug("DrillPreview3D.paintGL: draw call done")
 
         self._prog.disableAttributeArray(0)
         self._prog.disableAttributeArray(1)

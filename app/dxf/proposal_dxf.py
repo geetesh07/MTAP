@@ -279,27 +279,48 @@ def _build_solid(p: DrillProposalParams, *,
 
     _p(_base_pct + revolve_budget + flute_budget, "Cutting all flutes (Boolean)…")
 
-    if len(pipe_shapes) == 1:
-        tool = pipe_shapes[0]
-    else:
-        from OCP.BRep import BRep_Builder as _BRep_Builder
-        from OCP.TopoDS import TopoDS_Compound as _TopoDS_Compound
-        bld = _BRep_Builder()
-        cmp = _TopoDS_Compound()
-        bld.MakeCompound(cmp)
-        for ps in pipe_shapes:
-            bld.Add(cmp, ps)
-        tool = cmp
+    # Volume bookkeeping so the log can PROVE every flute was actually removed.
+    from OCP.GProp import GProp_GProps as _GProp
+    from OCP.BRepGProp import BRepGProp as _BRepGProp
+    def _vol(_sh):
+        _g2 = _GProp()
+        _BRepGProp.VolumeProperties_s(_sh, _g2)
+        return _g2.Mass()
 
-    cut = BRepAlgoAPI_Cut(solid, tool)
-    cut.SetRunParallel(True)
-    cut.SetFuzzyValue(1e-4)
-    cut.Build()
-    if not cut.IsDone():
-        raise RuntimeError(
-            f"Multi-flute Boolean cut failed (IsDone=False) for "
-            f"{len(pipe_shapes)} flutes — check log.")
-    solid = cut.Shape()
+    # Cut each flute SEQUENTIALLY, not as one compound tool.
+    #
+    # The earlier approach built a TopoDS_Compound of all flute pipes and did a
+    # single BRepAlgoAPI_Cut(solid, compound).  OCC's boolean operation with a
+    # *compound* tool (disjoint sub-solids) is numerically fragile: depending on
+    # flute count and the Dc!=D step topology it silently subtracts only some
+    # sub-shapes — sometimes one flute, sometimes none (e.g. 4 flutes removed
+    # ~0 volume).  Because the failure shifts with build-to-build numerical
+    # state, it presented as "only one flute on first run, fixed after a
+    # rebuild".  Cutting one well-defined solid at a time is deterministic and
+    # robust; the body-end overshoot already neutralises the Dc!=D degeneracy.
+    vol_before = _vol(solid)
+    for idx, ps in enumerate(pipe_shapes):
+        v_pre = _vol(solid)
+        cut = BRepAlgoAPI_Cut(solid, ps)
+        cut.SetRunParallel(False)
+        cut.SetFuzzyValue(1e-4)
+        cut.Build()
+        if not cut.IsDone():
+            raise RuntimeError(
+                f"Flute cut {idx + 1}/{len(pipe_shapes)} failed "
+                f"(IsDone=False) — check log.")
+        solid = cut.Shape()
+        v_post = _vol(solid)
+        if v_pre - v_post < 1e-4:
+            _logger.warning("Flute cut %d/%d removed ~0 volume "
+                            "(%.4f) — flute may be missing.",
+                            idx + 1, len(pipe_shapes), v_pre - v_post)
+
+    removed   = vol_before - _vol(solid)
+    per_flute = removed / len(pipe_shapes) if pipe_shapes else 0.0
+    _logger.info("Flute cut: %d flute(s), vol %.2f -> %.2f (removed %.2f, "
+                 "%.2f/flute)", len(pipe_shapes), vol_before, _vol(solid),
+                 removed, per_flute)
 
     return solid
 
