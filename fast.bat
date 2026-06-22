@@ -2,34 +2,33 @@
 REM ============================================================
 REM  MTAP - Fast code-only rebuild
 REM
-REM  Keeps existing _internal\ DLLs (no re-extraction).
-REM  Use this when you only changed Python source files.
+REM  Builds to dist_new\ to avoid locked DLL errors, then swaps
+REM  dist_new <-> dist so MTAP.exe is always at dist\MTAP.exe.
 REM  Run generate_exe.bat for a full clean build.
 REM ============================================================
 setlocal
 cd /d "%~dp0"
 
 set DIST=dist
+set DISTNEW=dist_new
+set DISTOLD=dist_old
 
 echo.
 echo ============================================================
 echo  MTAP  -  Fast Rebuild   %date% %time%
 echo ============================================================
 
-echo [1/3] Stopping any running MTAP...
+echo [1/4] Stopping any running MTAP...
 taskkill /F /IM MTAP.exe >nul 2>&1
 taskkill /F /IM accoreconsole.exe >nul 2>&1
-timeout /t 2 /nobreak >nul
+timeout /t 3 /nobreak >nul
 
-echo [2/3] Clearing dist folder...
-REM Rename (not delete) dist — rename only touches the dir entry, works even
-REM when DLLs inside are locked by Defender/shell. PyInstaller then builds to
-REM a fresh dist. The old folder is deleted after the build when locks are gone.
-if exist "%DIST%_old" rd /s /q "%DIST%_old" >nul 2>&1
-if exist "%DIST%"     ren "%DIST%" "%DIST%_old" >nul 2>&1
+echo [2/4] Clearing previous build targets...
+if exist "%DISTNEW%"     rd /s /q "%DISTNEW%"  >nul 2>&1
+if exist "%DISTOLD%"     rd /s /q "%DISTOLD%"  >nul 2>&1
 
-echo [3/3] Running PyInstaller...
-python -m PyInstaller MTAP.spec --noconfirm
+echo [3/4] Running PyInstaller (output -> %DISTNEW%)...
+python -m PyInstaller MTAP.spec --noconfirm --distpath "%DISTNEW%"
 if errorlevel 1 (
     echo.
     echo  *** BUILD FAILED - see output above ***
@@ -37,8 +36,13 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM Clean up the old dist folder now that the build is done and locks are gone
-if exist "%DIST%_old" rd /s /q "%DIST%_old" >nul 2>&1
+echo [4/4] Swapping dist...
+REM Rename old dist out of the way (may still be partially locked — rename works)
+if exist "%DIST%"    ren "%DIST%" "%DISTOLD%"    >nul 2>&1
+REM Move new build into place
+if exist "%DISTNEW%" ren "%DISTNEW%" "%DIST%"    >nul 2>&1
+REM Delete old dist in background (locks usually gone now that process was killed)
+if exist "%DISTOLD%" rd /s /q "%DISTOLD%"        >nul 2>&1
 
 echo.
 echo ============================================================

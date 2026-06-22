@@ -374,10 +374,9 @@ def _project_via_nodejs(mesh_data: dict) -> dict:
             except OSError:
                 pass
 
-    # side raw [x,z,x,z] -> DXF (axial=X, radial=Y) ; front already (X,Y)
-    side  = [(z1, x1, z2, x2) for (x1, z1, x2, z2) in raw['side']]
-    front = raw['front']
-    return {'side': side, 'front': front}
+    # side raw [x,z,x,z] -> DXF (axial=X, radial=Y)
+    side = [(z1, x1, z2, x2) for (x1, z1, x2, z2) in raw['side']]
+    return {'side': side}
 
 
 # ══════════════════════════════════════════════════════════ DXF annotations ══
@@ -467,6 +466,47 @@ def _add_dims(msp, p, rc, rs, h):
             _log2().warning("Angular point-angle dimension failed (non-fatal): %s", exc)
 
 
+def _add_end_view(msp, p, rc, front_cx):
+    """Analytical drill tip end-view (looking at the cutting face along the axis).
+
+    Draws: outer body circle, two cutting lips, chisel edge.
+    Uses only basic DXF entities so the result is clean and exact.
+    """
+    cx, cy  = front_cx, 0.0
+    web_r   = rc * 0.15          # web / core radius (≈ 15 % of Dc/2)
+
+    # Perfect outer body circle
+    msp.add_circle((cx, cy), rc, dxfattribs={"layer": "FRONT"})
+
+    # Lip direction: right-hand drill, first cutting lip exits the outer circle at
+    # (90° - helix_angle) from the +X axis in the end view.
+    lip_ang = math.radians(90.0 - p.helix_angle)
+    chi_ang = lip_ang + math.pi / 2       # chisel edge ⊥ to lips
+
+    cos_l, sin_l = math.cos(lip_ang), math.sin(lip_ang)
+    cos_c, sin_c = math.cos(chi_ang), math.sin(chi_ang)
+
+    if p.n_flutes == 2:
+        # Two cutting lips (parallel to each other, offset by the chisel edge)
+        # and one short chisel-edge line connecting their inner ends.
+        p1 = (cx + rc    *  cos_l, cy + rc    *  sin_l)   # lip 1 outer
+        p2 = (cx - rc    *  cos_l, cy - rc    *  sin_l)   # lip 2 outer
+        b1 = (cx + web_r *  cos_c, cy + web_r *  sin_c)   # lip 1 inner
+        b2 = (cx - web_r *  cos_c, cy - web_r *  sin_c)   # lip 2 inner
+
+        msp.add_line(b1, p1, dxfattribs={"layer": "FRONT"})   # cutting lip 1
+        msp.add_line(b2, p2, dxfattribs={"layer": "FRONT"})   # cutting lip 2
+        msp.add_line(b1, b2, dxfattribs={"layer": "FRONT"})   # chisel edge
+    else:
+        # For 3 / 4 flutes: n equally-spaced lips radiating from a web circle
+        for i in range(p.n_flutes):
+            a    = lip_ang + 2 * math.pi * i / p.n_flutes
+            outer = (cx + rc    * math.cos(a),          cy + rc    * math.sin(a))
+            inner = (cx + web_r * math.cos(a + math.pi), cy + web_r * math.sin(a + math.pi))
+            msp.add_line(inner, outer, dxfattribs={"layer": "FRONT"})
+        msp.add_circle((cx, cy), web_r, dxfattribs={"layer": "FRONT"})
+
+
 # ══════════════════════════════════════════════════════════ public entry point ══
 
 def _build_geometry_dxf(p: DrillProposalParams, geom_path: str, *,
@@ -513,10 +553,8 @@ def _build_geometry_dxf(p: DrillProposalParams, geom_path: str, *,
 
     for z1, x1, z2, x2 in views['side']:
         msp.add_line((z1, x1), (z2, x2), dxfattribs={"layer": "OUTLINE"})
-    for x1, y1, x2, y2 in views['front']:
-        msp.add_line((x1 + front_cx, y1), (x2 + front_cx, y2),
-                     dxfattribs={"layer": "FRONT"})
 
+    _add_end_view(msp, p, rc, front_cx)
     _add_centerlines(msp, p, rc, front_cx, front_r, pad)
     _add_dims(msp, p, rc, rs, h)
 

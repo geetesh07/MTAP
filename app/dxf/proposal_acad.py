@@ -257,13 +257,48 @@ def finalize_with_ezdxf(geom_dxf: str, p: DrillProposalParams,
 
     msp.add_blockref("MTAP_TEMPLATE", (ipx, ipy), dxfattribs={"xscale": s, "yscale": s})
 
-    # Header fix required for AutoCAD read-write compatibility
     doc.header["$DIMLFAC"] = 1.0
 
     doc.saveas(out_path)
     log.info("finalize_with_ezdxf: saved %s  (template scale=%.4f)", out_path, s)
 
     _verify_output(out_path, require_gdt=(p.runout > 0))
+
+
+def _accoreconsole_dxfout(acc: str, in_dxf: str, out_path: str) -> None:
+    """Open in_dxf in accoreconsole and DXFOUT to out_path.
+
+    This is the step that makes the file open read-WRITE in AutoCAD.
+    ezdxf-authored DXFs are always read-only; only AutoCAD's own DXFOUT
+    produces a file AutoCAD considers native (and therefore editable).
+    """
+    import tempfile as _tmp
+    scr_fd, scr_path = _tmp.mkstemp(suffix=".scr")
+    try:
+        out_fwd = _lsp_path(os.path.abspath(out_path)).replace('"', '\\"')
+        with os.fdopen(scr_fd, "w", encoding="utf-8") as fh:
+            fh.write("FILEDIA 0\nCMDDIA 0\n")
+            fh.write(f'DXFOUT "{out_fwd}" V 2010 16\n')
+            fh.write("QUIT Y\n")
+
+        if os.path.exists(out_path):
+            os.remove(out_path)
+
+        res = subprocess.run(
+            [acc, "/i", in_dxf, "/s", scr_path],
+            capture_output=True, timeout=180,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        if not os.path.isfile(out_path):
+            raise RuntimeError(
+                f"accoreconsole DXFOUT produced no output (exit {res.returncode}).\n"
+                f"stderr: {(res.stderr or b'').decode('latin-1', errors='replace')[:500]}")
+        log.info("_accoreconsole_dxfout: OK → %s", out_path)
+    finally:
+        try:
+            os.unlink(scr_path)
+        except OSError:
+            pass
 
 
 def finalize_with_acad(geom_dxf: str, p: DrillProposalParams,
@@ -279,10 +314,26 @@ def finalize_with_acad(geom_dxf: str, p: DrillProposalParams,
         require_acad: if True, skip the ezdxf path and require accoreconsole
             (use in batch/CLI mode to guarantee AutoCAD-authored output).
     """
-    # Fast path: DXF blocks available → no accoreconsole needed
-    if not require_acad and _dxf_blocks_dir() is not None:
-        log.info("finalize_with_acad: DXF blocks found — using ezdxf path (no AutoCAD).")
-        finalize_with_ezdxf(geom_dxf, p, anchors, out_path)
+    # Fast path: DXF blocks available — use ezdxf for block insertion.
+    # If accoreconsole is also present, pipe the result through DXFOUT so the
+    # file opens read-WRITE in AutoCAD (ezdxf-authored DXFs are always read-only).
+    if _dxf_blocks_dir() is not None:
+        acc_early = _find_accoreconsole()
+        if acc_early:
+            log.info("finalize_with_acad: DXF blocks + accoreconsole — ezdxf prep then DXFOUT.")
+            tmp_fd, tmp_path = tempfile.mkstemp(suffix=".dxf", prefix="mtap_ezdxf_")
+            os.close(tmp_fd)
+            try:
+                finalize_with_ezdxf(geom_dxf, p, anchors, tmp_path)
+                _accoreconsole_dxfout(acc_early, tmp_path, out_path)
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+        else:
+            log.warning("finalize_with_acad: no accoreconsole — DXF will open read-only in AutoCAD.")
+            finalize_with_ezdxf(geom_dxf, p, anchors, out_path)
         return
 
     acc = _find_accoreconsole()
