@@ -173,7 +173,7 @@ class DrillPreview3D(QOpenGLWidget):
         # QOpenGLFunctions_2_1 uses Qt's own resolved function pointers — the
         # same mechanism as QOpenGLShaderProgram — so attribute state and draw
         # calls target the identical driver backend (ANGLE or native WGL).
-        self._gl = QOpenGLFunctions_2_1(self.context())
+        self._gl = QOpenGLFunctions_2_1()
         if not self._gl.initializeOpenGLFunctions():
             log.error("DrillPreview3D: QOpenGLFunctions_2_1.initializeOpenGLFunctions() failed")
             self._gl = None
