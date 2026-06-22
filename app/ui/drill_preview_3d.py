@@ -14,25 +14,27 @@ Threading:
     Call it from the main thread after the worker finishes its numpy work.
 
 GL function access:
-    All raw GL calls (glClear, glDrawArrays, etc.) go through
-    self.context().functions() — Qt's own function-pointer resolver — so they
-    are guaranteed to target the same context and driver backend as
-    QOpenGLShaderProgram.setAttributeBuffer / enableAttributeArray.
-    Using ctypes opengl32.dll for the draw call while Qt set up attributes via
-    wglGetProcAddress extension pointers caused a black-screen regression in the
-    packaged exe (the two entry-point sets didn't share attribute state).
+    Raw GL calls use QOpenGLFunctions_2_1 (from PyQt6.QtOpenGL), which
+    resolves function pointers through Qt's internal mechanism — the same
+    as QOpenGLShaderProgram.setAttributeBuffer / enableAttributeArray.
+    ctypes opengl32 calls caused a black-screen regression in the packaged
+    exe because Qt may use ANGLE (OpenGL-ES-over-DX) while opengl32 targets
+    the native ICD: two separate driver contexts, attribute state not shared.
 
 Why CompatibilityProfile:
     CoreProfile 3.3 requires an explicit VAO; without one glVertexAttribPointer
     is silently ignored → black screen with no error.  CompatibilityProfile
     provides the implicit default VAO (id=0) so attribute setup works without
-    needing QOpenGLVertexArrayObject (also absent from some PyQt6 builds).
+    needing QOpenGLVertexArrayObject.
 """
 
 import math
 
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
-from PyQt6.QtOpenGL import QOpenGLShaderProgram, QOpenGLShader, QOpenGLBuffer
+from PyQt6.QtOpenGL import (
+    QOpenGLShaderProgram, QOpenGLShader, QOpenGLBuffer,
+    QOpenGLFunctions_2_1,
+)
 from PyQt6.QtGui import QMatrix4x4, QVector3D, QSurfaceFormat
 from PyQt6.QtCore import Qt, QPoint, QSize
 from PyQt6.QtWidgets import QSizePolicy
@@ -125,7 +127,7 @@ class DrillPreview3D(QOpenGLWidget):
 
         self._prog: QOpenGLShaderProgram | None = None
         self._vbo:  QOpenGLBuffer | None        = None
-        self._f                                  = None   # QOpenGLFunctions from context
+        self._gl:   QOpenGLFunctions_2_1 | None = None
 
         self._n_verts:  int  = 0
         self._has_mesh: bool = False
@@ -139,10 +141,10 @@ class DrillPreview3D(QOpenGLWidget):
         self._pending_scale: float = 1.0
 
         # Camera
-        self._azim:   float    = 35.0
-        self._elev:   float    = 22.0
-        self._dist:   float    = 1.5
-        self._scale:  float    = 100.0
+        self._azim:   float     = 35.0
+        self._elev:   float     = 22.0
+        self._dist:   float     = 1.5
+        self._scale:  float     = 100.0
         self._center: QVector3D = QVector3D(0.0, 0.0, 0.0)
 
         self._last_mouse: QPoint | None = None
@@ -168,14 +170,17 @@ class DrillPreview3D(QOpenGLWidget):
     # ── GL lifecycle ──────────────────────────────────────────────────────────
 
     def initializeGL(self) -> None:
-        # Resolve Qt's own GL function pointers for this context.
-        # These are guaranteed to target the same driver backend as
-        # QOpenGLShaderProgram, unlike ctypes opengl32.dll calls.
-        self._f = self.context().functions()
-        self._f.initializeOpenGLFunctions()
+        # QOpenGLFunctions_2_1 uses Qt's own resolved function pointers — the
+        # same mechanism as QOpenGLShaderProgram — so attribute state and draw
+        # calls target the identical driver backend (ANGLE or native WGL).
+        self._gl = QOpenGLFunctions_2_1(self.context())
+        if not self._gl.initializeOpenGLFunctions():
+            log.error("DrillPreview3D: QOpenGLFunctions_2_1.initializeOpenGLFunctions() failed")
+            self._gl = None
+            return
 
-        self._f.glEnable(_GL_DEPTH_TEST)
-        self._f.glClearColor(0.086, 0.078, 0.059, 1.0)
+        self._gl.glEnable(_GL_DEPTH_TEST)
+        self._gl.glClearColor(0.086, 0.078, 0.059, 1.0)
 
         self._prog = QOpenGLShaderProgram(self)
         ok  = self._prog.addShaderFromSourceCode(_VERT_SHADER, _VERT_SRC)
@@ -189,15 +194,15 @@ class DrillPreview3D(QOpenGLWidget):
         log.debug("DrillPreview3D.initializeGL OK")
 
     def resizeGL(self, w: int, h: int) -> None:
-        if self._f:
-            self._f.glViewport(0, 0, w, h)
+        if self._gl:
+            self._gl.glViewport(0, 0, w, h)
 
     def paintGL(self) -> None:
-        if not self._gl_ready or self._prog is None or self._f is None:
+        if not self._gl_ready or self._prog is None or self._gl is None:
             return
 
-        self._f.glClearColor(0.086, 0.078, 0.059, 1.0)
-        self._f.glClear(_GL_COLOR_BUFFER_BIT | _GL_DEPTH_BUFFER_BIT)
+        self._gl.glClearColor(0.086, 0.078, 0.059, 1.0)
+        self._gl.glClear(_GL_COLOR_BUFFER_BIT | _GL_DEPTH_BUFFER_BIT)
 
         if self._pending_vbo is not None:
             self._upload_vbo(
@@ -240,8 +245,7 @@ class DrillPreview3D(QOpenGLWidget):
         self._prog.setUniformValue("uMVP",   proj * view * model)
         self._prog.setUniformValue("uModel", model)
 
-        # Use Qt's own function pointer — same context/driver as the shader setup
-        self._f.glDrawArrays(_GL_TRIANGLES, 0, self._n_verts)
+        self._gl.glDrawArrays(_GL_TRIANGLES, 0, self._n_verts)
 
         self._prog.disableAttributeArray(0)
         self._prog.disableAttributeArray(1)
