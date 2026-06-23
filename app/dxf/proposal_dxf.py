@@ -482,7 +482,35 @@ def _project_via_nodejs(mesh_data: dict) -> dict:
 
     # side raw [x,z,x,z] -> DXF (axial=X, radial=Y)
     side = [(z1, x1, z2, x2) for (x1, z1, x2, z2) in raw['side']]
+    side = _clean_side_segments(side)
     return {'side': side}
+
+
+def _clean_side_segments(segs, q: float = 0.02, min_len: float = 0.05):
+    """De-noise the projected side view.
+
+    The visible-edge projection of the flute run-out emits a lot of junk:
+    zero-length degenerate segments and exact/near-duplicate edges where mesh
+    facets overlap.  In the run-out zone this junk outnumbers the real curves
+    ~2:1 and makes the swap look like a scribble.  We drop sub-min_len segments
+    and deduplicate edges snapped to a q-mm grid (undirected).  Real flute and
+    silhouette curves — which are long, non-duplicated chains — survive intact.
+    """
+    seen = set()
+    out  = []
+    for (z1, x1, z2, x2) in segs:
+        if math.hypot(z2 - z1, x2 - x1) < min_len:
+            continue                              # degenerate / sub-pixel stub
+        a = (round(z1 / q), round(x1 / q))
+        b = (round(z2 / q), round(x2 / q))
+        if a == b:
+            continue                              # collapses to a point on grid
+        key = (a, b) if a <= b else (b, a)        # undirected
+        if key in seen:
+            continue                              # duplicate overlapping edge
+        seen.add(key)
+        out.append((z1, x1, z2, x2))
+    return out
 
 
 # ══════════════════════════════════════════════════════════ DXF annotations ══
