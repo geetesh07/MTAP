@@ -115,93 +115,6 @@ def _make_helix_wire(z_start, length, radius, helix_angle_deg, phase_rad):
 
 
 
-def _make_flute_spine(z_tip, z_swap_start, z_swap_end, radius,
-                      helix_angle_deg, phase_rad, cutter_r=0.0):
-    """Two-edge compound wire: helix + swap run-out, tangent-matched at the join.
-
-    Edge 1 — pure helix (z_tip → z_swap_start): interpolated independently so
-    it stays perfectly cylindrical (no pull from the swap points).
-
-    Edge 2 — swap (z_swap_start → z_exit): helix continues rotating AND radius
-    grows at tan(35°)/mm.  Truncated once the cutter clears the body so the
-    Boolean doesn't see a balloon.
-
-    Both edges share an end/start tangent equal to the helix direction at
-    z_swap_start, enforced via GeomAPI_Interpolate tangent constraints.
-    This gives C1 continuity — MakePipe sees a smooth join, no kink.
-    """
-    ha    = math.radians(helix_angle_deg)
-    pitch = math.pi * 2.0 * radius / math.tan(ha)
-    w     = 2.0 * math.pi / pitch
-
-    def angle_at(z):
-        return w * (z - z_tip) + phase_rad
-
-    # Junction tangent: derivative of helix at z_swap_start (unnormalized).
-    # GeomAPI_Interpolate.Load normalises internally (Scale=True default).
-    a_j  = angle_at(z_swap_start)
-    jvec = gp_Vec(-radius * w * math.sin(a_j),
-                   radius * w * math.cos(a_j),
-                   1.0)
-
-    # ── Edge 1: helix ─────────────────────────────────────────────────────────
-    main_len = max(z_swap_start - z_tip, 1e-6)
-    n1       = max(_HELIX_MIN_PTS, int(_HELIX_PTS_PER_TURN * main_len / pitch))
-    arr1     = TColgp_HArray1OfPnt(1, n1 + 1)
-    for i in range(n1 + 1):
-        z = z_tip + main_len * i / n1
-        a = angle_at(z)
-        arr1.SetValue(i + 1, gp_Pnt(radius * math.cos(a),
-                                    radius * math.sin(a), z))
-
-    tang1 = TColgp_Array1OfVec(1, n1 + 1)
-    flag1 = TColStd_HArray1OfBoolean(1, n1 + 1)
-    for j in range(1, n1 + 2):
-        tang1.SetValue(j, gp_Vec(0, 0, 1))
-        flag1.SetValue(j, False)
-    tang1.SetValue(n1 + 1, jvec)   # constrain END tangent → no free-end wiggle
-    flag1.SetValue(n1 + 1, True)
-
-    i1 = GeomAPI_Interpolate(arr1, False, 1e-4)
-    i1.Load(tang1, flag1)
-    i1.Perform()
-    e1 = BRepBuilderAPI_MakeEdge(i1.Curve()).Edge()
-
-    # ── Edge 2: swap ──────────────────────────────────────────────────────────
-    dr_dz    = math.tan(math.radians(_SWAP_ANGLE_DEG))
-    # Stop once the cutter disc fully clears the body surface (+ 0.5 mm margin).
-    # Beyond that the pipe doesn't intersect the solid — no point growing further.
-    r_cap    = radius + cutter_r + 0.5 if cutter_r > 0 else radius * 1.8
-    exit_dz  = (r_cap - radius) / dr_dz
-    eff_swap = min(max(z_swap_end - z_swap_start, 0.0), exit_dz)
-
-    N2   = 6
-    arr2 = TColgp_HArray1OfPnt(1, N2 + 1)
-    for i in range(N2 + 1):
-        z = z_swap_start + eff_swap * i / N2
-        r = radius + dr_dz * (z - z_swap_start)
-        a = angle_at(z)
-        arr2.SetValue(i + 1, gp_Pnt(r * math.cos(a), r * math.sin(a), z))
-
-    tang2 = TColgp_Array1OfVec(1, N2 + 1)
-    flag2 = TColStd_HArray1OfBoolean(1, N2 + 1)
-    for j in range(1, N2 + 2):
-        tang2.SetValue(j, gp_Vec(0, 0, 1))
-        flag2.SetValue(j, False)
-    tang2.SetValue(1, jvec)         # constrain START tangent → C1 at junction
-    flag2.SetValue(1, True)
-
-    i2 = GeomAPI_Interpolate(arr2, False, 1e-4)
-    i2.Load(tang2, flag2)
-    i2.Perform()
-    e2 = BRepBuilderAPI_MakeEdge(i2.Curve()).Edge()
-
-    # ── Combine ───────────────────────────────────────────────────────────────
-    wb = BRepBuilderAPI_MakeWire()
-    wb.Add(e1)
-    wb.Add(e2)
-    return wb.Wire()
-
 
 def _disk_profile(center, normal_dir, radius):
     from OCP.GC import GC_MakeCircle
@@ -283,17 +196,16 @@ def _build_solid(p: DrillProposalParams, *,
     import sys as _sys
     _g = _sys.modules[__name__].__dict__
     if "gp_Pnt" not in _g:
-        from OCP.gp import gp_Pnt, gp_Dir, gp_Ax1, gp_Ax2
-        from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakeCone, BRepPrimAPI_MakeRevol
+        from OCP.gp import gp_Pnt, gp_Dir, gp_Ax1, gp_Ax2, gp_Vec, gp_Trsf
+        from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakeCone, BRepPrimAPI_MakeRevol, BRepPrimAPI_MakePrism
         from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
-        from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire, BRepBuilderAPI_MakeFace
+        from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire, BRepBuilderAPI_MakeFace, BRepBuilderAPI_Transform
         from OCP.BRepOffsetAPI import BRepOffsetAPI_MakePipe
         from OCP.BRepMesh import BRepMesh_IncrementalMesh
         from OCP.BRep import BRep_Tool
         from OCP.TopLoc import TopLoc_Location
         from OCP.GeomAPI import GeomAPI_Interpolate
-        from OCP.TColgp import TColgp_HArray1OfPnt, TColgp_Array1OfVec
-        from OCP.TColStd import TColStd_HArray1OfBoolean
+        from OCP.TColgp import TColgp_HArray1OfPnt
         from OCP.gp import gp_Vec
         from OCP.TopExp import TopExp_Explorer
         from OCP.TopAbs import TopAbs_FACE, TopAbs_REVERSED
@@ -306,12 +218,13 @@ def _build_solid(p: DrillProposalParams, *,
     gp_Pnt                   = _g["gp_Pnt"]
     gp_Dir                   = _g["gp_Dir"]
     gp_Vec                   = _g["gp_Vec"]
+    gp_Trsf                  = _g["gp_Trsf"]
     gp_Ax1                   = _g["gp_Ax1"]
     gp_Ax2                   = _g["gp_Ax2"]
     BRepAlgoAPI_Cut          = _g["BRepAlgoAPI_Cut"]
     BRepOffsetAPI_MakePipe   = _g["BRepOffsetAPI_MakePipe"]
-    TColgp_Array1OfVec       = _g["TColgp_Array1OfVec"]
-    TColStd_HArray1OfBoolean = _g["TColStd_HArray1OfBoolean"]
+    BRepPrimAPI_MakePrism    = _g["BRepPrimAPI_MakePrism"]
+    BRepBuilderAPI_Transform = _g["BRepBuilderAPI_Transform"]
 
     rc = p.cutting_diameter / 2.0
     rs = p.effective_shank_diameter / 2.0
@@ -345,68 +258,109 @@ def _build_solid(p: DrillProposalParams, *,
         tip_over = _TIP_OVERSHOOT_FRAC * p.cutting_diameter
     z_tip = -tip_over
 
-    # Swap zone: last Dc×1.3 of body, ending at the body/shank junction.
+    # Swap zone: last Dc×1.3 of body.
     swap_len     = p.cutting_diameter * _SWAP_LEN_FRAC
     z_swap_end   = p.x_body_end
     z_swap_start = max(z_swap_end - swap_len, p.x_point_base + EPS)
+
+    ha_rad  = math.radians(p.helix_angle)
+    cos_ha  = math.cos(ha_rad)
+    sin_ha  = math.sin(ha_rad)
+    pitch   = 2.0 * math.pi * helix_r / math.tan(ha_rad)
+    w_rate  = 2.0 * math.pi / pitch   # rad per mm axial
+
     _logger.info("Flute spec: n=%d core=%.0f%% flute_r=%.3f  z_tip=%.3f  "
-                 "swap=[%.3f..%.3f]",
+                 "swap_start=%.3f  body_end=%.3f",
                  p.n_flutes, core_frac * 100, flute_r, z_tip,
                  z_swap_start, z_swap_end)
 
-    # Per-flute budget: each flute gets an equal share of the range, split 40/60
-    # between pipe-build and boolean-cut so the bar moves at every stage.
-    per_flute  = flute_budget / max(p.n_flutes, 1)
-    pipe_share = int(per_flute * 0.40)
-    cut_share  = int(per_flute * 0.60)
+    # ── Build flute-0 shapes once; rotate for flutes 1..n-1 ─────────────────
+    # This saves (n-1) MakePipe calls — the most expensive operation.
+
+    # Flute-0 main helix: z_tip → z_swap_start, phase=0
+    build_pct = _base_pct + revolve_budget
+    _p(build_pct, "Building flute helix…")
+    helix_len_0 = z_swap_start - z_tip
+    main_wire_0 = _make_helix_wire(z_tip, helix_len_0, helix_r, p.helix_angle, 0.0)
+
+    # Disk profile at z_tip with helix tangent direction, phase=0
+    # tangent = (-sin(0)*cos_ha, cos(0)*cos_ha, sin_ha) = (0, cos_ha, sin_ha)
+    prof_0 = _disk_profile(gp_Pnt(helix_r, 0.0, z_tip),
+                           gp_Dir(0.0, cos_ha, sin_ha), flute_r)
+
+    _p(build_pct + flute_budget // 4, "Sweeping flute pipe…")
+    try:
+        main_pipe = BRepOffsetAPI_MakePipe(main_wire_0, prof_0)
+        main_pipe.Build()
+    except Exception as exc:
+        raise RuntimeError(f"Flute MakePipe failed: {exc}") from exc
+    if not main_pipe.IsDone():
+        raise RuntimeError("Flute MakePipe failed (IsDone=False)")
+    main_shape_0 = main_pipe.Shape()
+    time.sleep(0)   # release GIL
+
+    # Flute-0 swap prism: extruded cylinder along helix tangent from z_swap_start.
+    # BRepPrimAPI_MakePrism is near-instant (simple translation, not a curved sweep).
+    # The prism exits the body once the cutter centre distance from Z axis
+    # satisfies: sqrt(rc² + t²·cos²(ha)) - flute_r > rc
+    # → t = sqrt(flute_r·(flute_r + 2·rc)) / cos(ha)  + small margin.
+    _p(build_pct + flute_budget // 3, "Building swap geometry…")
+    a_swap   = w_rate * (z_swap_start - z_tip)          # helix angle at swap start
+    x_sw     = helix_r * math.cos(a_swap)
+    y_sw     = helix_r * math.sin(a_swap)
+    # Tangent direction at z_swap_start (helix is constant-angle so same formula)
+    sw_tx = -math.sin(a_swap) * cos_ha
+    sw_ty =  math.cos(a_swap) * cos_ha
+    sw_tz =  sin_ha
+    exit_t = math.sqrt(flute_r * (flute_r + 2.0 * helix_r)) / cos_ha + 1.0
+    swap_face_0 = _disk_profile(gp_Pnt(x_sw, y_sw, z_swap_start),
+                                gp_Dir(sw_tx, sw_ty, sw_tz), flute_r)
+    swap_prism = BRepPrimAPI_MakePrism(
+        swap_face_0, gp_Vec(sw_tx * exit_t, sw_ty * exit_t, sw_tz * exit_t))
+    swap_prism.Build()
+    swap_shape_0 = swap_prism.Shape()
+    time.sleep(0)
+
+    # ── Rotate flute-0 shapes and cut each flute ─────────────────────────────
+    ax_z       = gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1))
+    cut_budget = flute_budget - flute_budget // 3
+    per_flute  = cut_budget / max(p.n_flutes, 1)
 
     for i in range(p.n_flutes):
-        base_i = _base_pct + revolve_budget + int(per_flute * i)
+        base_i = _base_pct + revolve_budget + flute_budget // 3 + int(per_flute * i)
+        _p(base_i, f"Cutting flute {i + 1}/{p.n_flutes}…")
 
-        # ── pipe ────────────────────────────────────────────────────────────
-        _p(base_i, f"Building flute spine {i + 1}/{p.n_flutes}…")
+        if i == 0:
+            rot_main = main_shape_0
+            rot_swap = swap_shape_0
+        else:
+            trsf = gp_Trsf()
+            trsf.SetRotation(ax_z, 2.0 * math.pi * i / p.n_flutes)
+            rot_main = BRepBuilderAPI_Transform(main_shape_0, trsf, True).Shape()
+            rot_swap = BRepBuilderAPI_Transform(swap_shape_0, trsf, True).Shape()
 
-        phase = (2 * math.pi * i) / p.n_flutes
-        spine = _make_flute_spine(z_tip, z_swap_start, z_swap_end, helix_r,
-                                  p.helix_angle, phase, cutter_r=flute_r)
+        # Main helix cut
+        c1 = BRepAlgoAPI_Cut(solid, rot_main)
+        c1.SetRunParallel(False)
+        c1.SetFuzzyValue(1e-4)
+        c1.Build()
+        if not c1.IsDone():
+            raise RuntimeError(f"Main flute cut {i + 1} failed (IsDone=False)")
+        solid = c1.Shape()
+        time.sleep(0)
 
-        ha  = math.radians(p.helix_angle)
-        tx  = -math.sin(phase) * math.cos(ha)
-        ty  =  math.cos(phase) * math.cos(ha)
-        tz  =  math.sin(ha)
-        mag = math.sqrt(tx*tx + ty*ty + tz*tz)
-        tang = gp_Dir(tx/mag, ty/mag, tz/mag)
+        # Swap prism cut
+        _p(base_i + int(per_flute * 0.6), f"Cutting swap {i + 1}/{p.n_flutes}…")
+        c2 = BRepAlgoAPI_Cut(solid, rot_swap)
+        c2.SetRunParallel(False)
+        c2.SetFuzzyValue(1e-4)
+        c2.Build()
+        if not c2.IsDone():
+            raise RuntimeError(f"Swap cut {i + 1} failed (IsDone=False)")
+        solid = c2.Shape()
+        time.sleep(0)
 
-        start_pt = gp_Pnt(helix_r * math.cos(phase),
-                          helix_r * math.sin(phase), z_tip)
-        prof = _disk_profile(start_pt, tang, flute_r)
-
-        _p(base_i + pipe_share // 2, f"Sweeping flute {i + 1}/{p.n_flutes}…")
-        try:
-            pipe = BRepOffsetAPI_MakePipe(spine, prof)
-            pipe.Build()
-        except Exception as exc:
-            raise RuntimeError(
-                f"Flute {i + 1}/{p.n_flutes}: MakePipe exception: {exc}") from exc
-        if not pipe.IsDone():
-            raise RuntimeError(
-                f"Flute {i + 1}/{p.n_flutes}: MakePipe failed (IsDone=False)")
-        time.sleep(0)   # release GIL — lets Qt event loop breathe on main thread
-
-        # ── boolean ─────────────────────────────────────────────────────────
-        _p(base_i + pipe_share, f"Cutting flute {i + 1}/{p.n_flutes}…")
-        cut = BRepAlgoAPI_Cut(solid, pipe.Shape())
-        cut.SetRunParallel(False)
-        cut.SetFuzzyValue(1e-4)
-        cut.Build()
-        if not cut.IsDone():
-            raise RuntimeError(
-                f"Flute cut {i + 1}/{p.n_flutes} failed (IsDone=False)")
-        solid = cut.Shape()
-        time.sleep(0)   # release GIL
-
-        _p(base_i + pipe_share + cut_share,
-           f"Flute {i + 1}/{p.n_flutes} done")
+        _p(base_i + int(per_flute), f"Flute {i + 1}/{p.n_flutes} done")
         _logger.info("Flute %d/%d done.", i + 1, p.n_flutes)
 
     return solid
