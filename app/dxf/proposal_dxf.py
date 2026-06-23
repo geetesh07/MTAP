@@ -202,14 +202,14 @@ def _build_solid(p: DrillProposalParams, *,
         from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire, BRepBuilderAPI_MakeFace, BRepBuilderAPI_Transform
         from OCP.BRepOffsetAPI import BRepOffsetAPI_MakePipe
         from OCP.BRepMesh import BRepMesh_IncrementalMesh
-        from OCP.BRep import BRep_Tool
+        from OCP.BRep import BRep_Tool, BRep_Builder
         from OCP.TopLoc import TopLoc_Location
         from OCP.GeomAPI import GeomAPI_Interpolate
         from OCP.TColgp import TColgp_HArray1OfPnt
         from OCP.gp import gp_Vec
         from OCP.TopExp import TopExp_Explorer
         from OCP.TopAbs import TopAbs_FACE, TopAbs_REVERSED
-        from OCP.TopoDS import TopoDS
+        from OCP.TopoDS import TopoDS, TopoDS_Compound
         _g.update({k: v for k, v in locals().items() if not k.startswith("_")})
 
     # Re-bind to locals unconditionally — Python marks any name that appears in
@@ -223,8 +223,9 @@ def _build_solid(p: DrillProposalParams, *,
     gp_Ax2                   = _g["gp_Ax2"]
     BRepAlgoAPI_Cut          = _g["BRepAlgoAPI_Cut"]
     BRepOffsetAPI_MakePipe   = _g["BRepOffsetAPI_MakePipe"]
-    BRepPrimAPI_MakePrism    = _g["BRepPrimAPI_MakePrism"]
     BRepBuilderAPI_Transform = _g["BRepBuilderAPI_Transform"]
+    BRep_Builder             = _g["BRep_Builder"]
+    TopoDS_Compound          = _g["TopoDS_Compound"]
 
     rc = p.cutting_diameter / 2.0
     rs = p.effective_shank_diameter / 2.0
@@ -274,21 +275,20 @@ def _build_solid(p: DrillProposalParams, *,
                  p.n_flutes, core_frac * 100, flute_r, z_tip,
                  z_swap_start, z_swap_end)
 
-    # ── Build flute-0 shapes once; rotate for flutes 1..n-1 ─────────────────
-    # This saves (n-1) MakePipe calls — the most expensive operation.
+    # ── Build flute-0 pipe once; rotate copies for flutes 1..n-1 ────────────
+    # One MakePipe call; all n flutes come from BRepBuilderAPI_Transform (fast).
+    # The helix runs from z_tip to z_swap_start — groove stops cleanly there.
 
-    # Flute-0 main helix: z_tip → z_swap_start, phase=0
     build_pct = _base_pct + revolve_budget
     _p(build_pct, "Building flute helix…")
     helix_len_0 = z_swap_start - z_tip
     main_wire_0 = _make_helix_wire(z_tip, helix_len_0, helix_r, p.helix_angle, 0.0)
 
-    # Disk profile at z_tip with helix tangent direction, phase=0
-    # tangent = (-sin(0)*cos_ha, cos(0)*cos_ha, sin_ha) = (0, cos_ha, sin_ha)
+    # Disk profile at z_tip, phase=0 tangent = (0, cos_ha, sin_ha)
     prof_0 = _disk_profile(gp_Pnt(helix_r, 0.0, z_tip),
                            gp_Dir(0.0, cos_ha, sin_ha), flute_r)
 
-    _p(build_pct + flute_budget // 4, "Sweeping flute pipe…")
+    _p(build_pct + flute_budget // 3, "Sweeping flute pipe…")
     try:
         main_pipe = BRepOffsetAPI_MakePipe(main_wire_0, prof_0)
         main_pipe.Build()
@@ -297,72 +297,35 @@ def _build_solid(p: DrillProposalParams, *,
     if not main_pipe.IsDone():
         raise RuntimeError("Flute MakePipe failed (IsDone=False)")
     main_shape_0 = main_pipe.Shape()
-    time.sleep(0)   # release GIL
-
-    # Flute-0 swap prism: extruded cylinder along helix tangent from z_swap_start.
-    # BRepPrimAPI_MakePrism is near-instant (simple translation, not a curved sweep).
-    # The prism exits the body once the cutter centre distance from Z axis
-    # satisfies: sqrt(rc² + t²·cos²(ha)) - flute_r > rc
-    # → t = sqrt(flute_r·(flute_r + 2·rc)) / cos(ha)  + small margin.
-    _p(build_pct + flute_budget // 3, "Building swap geometry…")
-    a_swap   = w_rate * (z_swap_start - z_tip)          # helix angle at swap start
-    x_sw     = helix_r * math.cos(a_swap)
-    y_sw     = helix_r * math.sin(a_swap)
-    # Tangent direction at z_swap_start (helix is constant-angle so same formula)
-    sw_tx = -math.sin(a_swap) * cos_ha
-    sw_ty =  math.cos(a_swap) * cos_ha
-    sw_tz =  sin_ha
-    exit_t = math.sqrt(flute_r * (flute_r + 2.0 * helix_r)) / cos_ha + 1.0
-    swap_face_0 = _disk_profile(gp_Pnt(x_sw, y_sw, z_swap_start),
-                                gp_Dir(sw_tx, sw_ty, sw_tz), flute_r)
-    swap_prism = BRepPrimAPI_MakePrism(
-        swap_face_0, gp_Vec(sw_tx * exit_t, sw_ty * exit_t, sw_tz * exit_t))
-    swap_prism.Build()
-    swap_shape_0 = swap_prism.Shape()
     time.sleep(0)
 
-    # ── Rotate flute-0 shapes and cut each flute ─────────────────────────────
-    ax_z       = gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1))
-    cut_budget = flute_budget - flute_budget // 3
-    per_flute  = cut_budget / max(p.n_flutes, 1)
+    # ── Compound: all rotated copies → ONE Boolean cut ───────────────────────
+    # Cutting the original (simple) cylinder once with a compound tool is faster
+    # than N sequential cuts on an ever-growing complex solid.
+    _p(build_pct + flute_budget * 2 // 3, "Building flute compound…")
+    ax_z     = gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1))
+    compound = TopoDS_Compound()
+    bb       = BRep_Builder()
+    bb.MakeCompound(compound)
+    bb.Add(compound, main_shape_0)
+    for i in range(1, p.n_flutes):
+        trsf = gp_Trsf()
+        trsf.SetRotation(ax_z, 2.0 * math.pi * i / p.n_flutes)
+        bb.Add(compound, BRepBuilderAPI_Transform(main_shape_0, trsf, True).Shape())
+    time.sleep(0)
 
-    for i in range(p.n_flutes):
-        base_i = _base_pct + revolve_budget + flute_budget // 3 + int(per_flute * i)
-        _p(base_i, f"Cutting flute {i + 1}/{p.n_flutes}…")
+    _p(build_pct + flute_budget * 2 // 3 + 2, "Cutting all flutes…")
+    cut = BRepAlgoAPI_Cut(solid, compound)
+    cut.SetRunParallel(False)
+    cut.SetFuzzyValue(1e-4)
+    cut.Build()
+    if not cut.IsDone():
+        raise RuntimeError("Compound flute cut failed (IsDone=False)")
+    solid = cut.Shape()
+    time.sleep(0)
 
-        if i == 0:
-            rot_main = main_shape_0
-            rot_swap = swap_shape_0
-        else:
-            trsf = gp_Trsf()
-            trsf.SetRotation(ax_z, 2.0 * math.pi * i / p.n_flutes)
-            rot_main = BRepBuilderAPI_Transform(main_shape_0, trsf, True).Shape()
-            rot_swap = BRepBuilderAPI_Transform(swap_shape_0, trsf, True).Shape()
-
-        # Main helix cut
-        c1 = BRepAlgoAPI_Cut(solid, rot_main)
-        c1.SetRunParallel(False)
-        c1.SetFuzzyValue(1e-4)
-        c1.Build()
-        if not c1.IsDone():
-            raise RuntimeError(f"Main flute cut {i + 1} failed (IsDone=False)")
-        solid = c1.Shape()
-        time.sleep(0)
-
-        # Swap prism cut
-        _p(base_i + int(per_flute * 0.6), f"Cutting swap {i + 1}/{p.n_flutes}…")
-        c2 = BRepAlgoAPI_Cut(solid, rot_swap)
-        c2.SetRunParallel(False)
-        c2.SetFuzzyValue(1e-4)
-        c2.Build()
-        if not c2.IsDone():
-            raise RuntimeError(f"Swap cut {i + 1} failed (IsDone=False)")
-        solid = c2.Shape()
-        time.sleep(0)
-
-        _p(base_i + int(per_flute), f"Flute {i + 1}/{p.n_flutes} done")
-        _logger.info("Flute %d/%d done.", i + 1, p.n_flutes)
-
+    _p(_end_pct, "Flutes done")
+    _logger.info("All %d flutes cut.", p.n_flutes)
     return solid
 
 
@@ -586,6 +549,30 @@ def _add_end_view(msp, p, rc, front_cx):
         msp.add_circle((cx, cy), web_r, dxfattribs={"layer": "FRONT"})
 
 
+def _draw_outline(msp, p, rc, rs, chamfer):
+    """Analytical side-view outer profile — clean silhouette with no flute edges.
+
+    Iterates the same closed lathe profile used to revolve the solid.  Each
+    segment is mirrored across the centre axis to produce the upper and lower
+    half of the side view.  Axis-only segments (both endpoints on r=0) are
+    skipped because they belong on the centre-line layer.
+    End-face segments (same z, one endpoint on axis) are drawn as a single
+    vertical line spanning ±r.
+    """
+    pts = _profile_points(p, rc, rs, chamfer)
+    for i in range(len(pts) - 1):
+        r1, z1 = pts[i]
+        r2, z2 = pts[i + 1]
+        if r1 < EPS and r2 < EPS:
+            continue                             # pure axis segment — skip
+        if abs(z1 - z2) < EPS and r2 < EPS:
+            # end-face edge (r decreases to 0 at same z) → single vertical line
+            msp.add_line((z1, -r1), (z1, r1), dxfattribs={"layer": "OUTLINE"})
+            continue
+        msp.add_line((z1,  r1), (z2,  r2), dxfattribs={"layer": "OUTLINE"})
+        msp.add_line((z1, -r1), (z2, -r2), dxfattribs={"layer": "OUTLINE"})
+
+
 # ══════════════════════════════════════════════════════════ public entry point ══
 
 def _build_geometry_dxf(p: DrillProposalParams, geom_path: str, *,
@@ -593,9 +580,9 @@ def _build_geometry_dxf(p: DrillProposalParams, geom_path: str, *,
     """Write the geometry-only DXF (views + centrelines + dims). Returns anchor
     points the AutoCAD stage needs to place the GD&T / datum blocks.
 
-    _progress(percent, message) is called at each pipeline stage.
-    _mesh_cb(verts_flat, indices_flat) is called once after tessellation so the
-    UI can display the 3D solid while accoreconsole finalizes the DXF.
+    Side view is drawn analytically from drill params — clean silhouette with
+    no flute edges.  The 3D solid is still built so the 3D viewer updates via
+    _mesh_cb while accoreconsole finalizes the DXF.
     """
     def _p(pct, msg):
         if _progress:
@@ -603,6 +590,8 @@ def _build_geometry_dxf(p: DrillProposalParams, geom_path: str, *,
 
     rc = p.cutting_diameter / 2.0
     rs = p.effective_shank_diameter / 2.0
+    chamfer = min(0.1 * p.effective_shank_diameter,
+                  rs * 0.8, max(p.shank_length * 0.5, 0.0))
 
     solid = _build_solid_cached(p, _progress=_progress, _base_pct=5, _end_pct=58)
 
@@ -611,9 +600,6 @@ def _build_geometry_dxf(p: DrillProposalParams, geom_path: str, *,
 
     if _mesh_cb:
         _mesh_cb(mesh_data['v'], mesh_data['i'])
-
-    _p(65, "Projecting edges…")
-    views     = _project_via_nodejs(mesh_data)
 
     _p(78, "Writing DXF…")
     feature = max(p.overall_length, p.cutting_diameter * 4.0,
@@ -630,8 +616,7 @@ def _build_geometry_dxf(p: DrillProposalParams, geom_path: str, *,
     msp = doc.modelspace()
     _ensure_layers(doc)
 
-    for z1, x1, z2, x2 in views['side']:
-        msp.add_line((z1, x1), (z2, x2), dxfattribs={"layer": "OUTLINE"})
+    _draw_outline(msp, p, rc, rs, chamfer)
 
     _add_end_view(msp, p, rc, front_cx)
     _add_centerlines(msp, p, rc, front_cx, front_r, pad)
@@ -671,9 +656,9 @@ def preview_solid(params: DrillProposalParams, *,
     _orig_helix_pts  = _mod._HELIX_PTS_PER_TURN
     _orig_helix_min  = _mod._HELIX_MIN_PTS
     _orig_deflection = _mod._MESH_DEFLECTION
-    _mod._HELIX_PTS_PER_TURN = 16   # 8 was too coarse — 9-pt spline distorts 2nd pipe shape
-    _mod._HELIX_MIN_PTS      = 10   # was 6
-    _mod._MESH_DEFLECTION    = 0.18 # coarser than DXF (0.12) but not so coarse it hides flutes
+    _mod._HELIX_PTS_PER_TURN = 12   # fewer spine points → faster MakePipe; still smooth
+    _mod._HELIX_MIN_PTS      = 8
+    _mod._MESH_DEFLECTION    = 0.20 # coarser mesh; fine for interactive preview
 
     try:
         _p(2, "Starting…")
