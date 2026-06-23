@@ -26,8 +26,13 @@ from app.engine.tools.drill import DrillProposalParams
 from app.utils.config import resource_path
 
 EPS = 1e-6
-_HELIX_PTS_PER_TURN = 24          # 24 pts/turn — smooth splines for DXF projection
-_HELIX_MIN_PTS      = 12          # minimum spine points per flute (floor for short bodies)
+# Spine point density. 16/turn gives a smooth interpolated helix for the 3D
+# solid + STEP.  Do NOT raise toward 24: on small-diameter / low-helix drills a
+# dense spine degenerates the swept-pipe surface and the flute Boolean explodes
+# from ~3 s to ~80 s.  The DXF side view is drawn analytically (not from the
+# mesh), so it needs no extra spine density.
+_HELIX_PTS_PER_TURN = 16
+_HELIX_MIN_PTS      = 10          # minimum spine points per flute (floor for short bodies)
 _MESH_DEFLECTION    = 0.12        # mm — coarser than 0.05; fine for DXF projection
 
 # ── flute geometry rules (per the tool-design spec) ───────────────────────────
@@ -95,18 +100,74 @@ def _node_script() -> str:
 
 # ══════════════════════════════════════════════════════════ solid construction ══
 
-def _make_helix_wire(z_start, length, radius, helix_angle_deg, phase_rad):
-    pitch = math.pi * 2 * radius / math.tan(math.radians(helix_angle_deg))
-    turns = length / pitch
-    n_pts = max(_HELIX_MIN_PTS, int(_HELIX_PTS_PER_TURN * turns))
+def _make_flute_spine(z_tip, z_swap_start, z_swap_end, radius,
+                      helix_angle_deg, phase_rad, flute_r):
+    """One continuous flute spine: constant-radius helix, then a run-out ("swap")
+    that spirals smoothly OUT of the body.  Returned as a single B-spline wire so
+    MakePipe sees one smooth curve — the swap is genuinely part of the helix.
 
-    arr = TColgp_HArray1OfPnt(1, n_pts + 1)
-    for i in range(n_pts + 1):
-        t     = i / n_pts
-        z     = z_start + length * t
-        angle = 2 * math.pi * turns * t + phase_rad
-        arr.SetValue(i + 1, gp_Pnt(radius * math.cos(angle),
-                                   radius * math.sin(angle), z))
+    Geometry
+    --------
+    angle(z) = w·(z - z_tip) + phase   — the cutter keeps the SAME helical lead
+    for the whole spine (helix and swap), so the run-out is a continuation of the
+    twist, not a separate feature.
+
+    radius(z):
+      • z ≤ z_swap_start            → rc                 (cuts the flute)
+      • z_swap_start … z_swap_end   → rc → r_exit via SMOOTHSTEP (3t²−2t³)
+
+    Why smoothstep and not a straight ramp: smoothstep has ZERO slope at both
+    ends.  At the junction its slope matches the flat helix (dr/dz = 0), so the
+    spine has no corner there — a single B-spline through it stays smooth instead
+    of overshooting into a banana.  A linear ramp injects a slope discontinuity
+    that the global interpolation rings on; that was the old failure.
+
+    r_exit = rc + flute_r + margin → the cutter disc (radius flute_r) fully clears
+    the body surface (radius rc) by z_swap_end, so the flute "runs completely off
+    the body" exactly at the end of the swap length.  The spine STOPS at
+    z_swap_end, so there is no wasted tube beyond the body to slow the Boolean.
+    """
+    ha     = math.radians(helix_angle_deg)
+    pitch  = math.pi * 2.0 * radius / math.tan(ha)
+    w      = 2.0 * math.pi / pitch                 # rad of twist per mm of z
+
+    r_exit = radius + flute_r + 0.5                # clear the body + 0.5 mm margin
+    swap   = max(z_swap_end - z_swap_start, 0.0)
+
+    def angle_at(z):
+        return w * (z - z_tip) + phase_rad
+
+    pts = []
+
+    # ── helix segment: z_tip → z_swap_start, constant radius ──────────────────
+    helix_len   = max(z_swap_start - z_tip, 1e-6)
+    helix_turns = helix_len / pitch
+    n1          = max(_HELIX_MIN_PTS, int(_HELIX_PTS_PER_TURN * helix_turns))
+    for i in range(n1 + 1):                         # include the junction point
+        z = z_tip + helix_len * i / n1
+        a = angle_at(z)
+        pts.append((radius * math.cos(a), radius * math.sin(a), z))
+
+    # ── swap segment: z_swap_start → z_swap_end, smoothstep radius ────────────
+    # Sampled with FEW points (8): the swap curve is gentle, and a low point
+    # count keeps the resulting B-spline pipe surface simple.  This is critical
+    # for Boolean speed — a dense (20-pt) spine makes the tangent run-out cut
+    # take 15 s; 8 pts cuts it to <1 s.  Starts at j=1 so the junction point
+    # isn't duplicated.
+    if swap > EPS:
+        n2 = 6
+        for j in range(1, n2 + 1):
+            t = j / n2
+            s = t * t * (3.0 - 2.0 * t)             # smoothstep
+            z = z_swap_start + swap * t
+            r = radius + (r_exit - radius) * s
+            a = angle_at(z)
+            pts.append((r * math.cos(a), r * math.sin(a), z))
+
+    arr = TColgp_HArray1OfPnt(1, len(pts))
+    for k, (x, y, z) in enumerate(pts):
+        arr.SetValue(k + 1, gp_Pnt(x, y, z))
+
     interp = GeomAPI_Interpolate(arr, False, 1e-4)
     interp.Perform()
     edge = BRepBuilderAPI_MakeEdge(interp.Curve()).Edge()
@@ -277,12 +338,13 @@ def _build_solid(p: DrillProposalParams, *,
 
     # ── Build flute-0 pipe once; rotate copies for flutes 1..n-1 ────────────
     # One MakePipe call; all n flutes come from BRepBuilderAPI_Transform (fast).
-    # The helix runs from z_tip to z_swap_start — groove stops cleanly there.
+    # Spine = helix + smooth run-out (swap) so the groove lifts cleanly off the
+    # body by z_swap_end.
 
     build_pct = _base_pct + revolve_budget
-    _p(build_pct, "Building flute helix…")
-    helix_len_0 = z_swap_start - z_tip
-    main_wire_0 = _make_helix_wire(z_tip, helix_len_0, helix_r, p.helix_angle, 0.0)
+    _p(build_pct, "Building flute helix + swap…")
+    main_wire_0 = _make_flute_spine(z_tip, z_swap_start, z_swap_end, helix_r,
+                                    p.helix_angle, 0.0, flute_r)
 
     # Disk profile at z_tip, phase=0 tangent = (0, cos_ha, sin_ha)
     prof_0 = _disk_profile(gp_Pnt(helix_r, 0.0, z_tip),
@@ -316,8 +378,10 @@ def _build_solid(p: DrillProposalParams, *,
 
     _p(build_pct + flute_budget * 2 // 3 + 2, "Cutting all flutes…")
     cut = BRepAlgoAPI_Cut(solid, compound)
-    cut.SetRunParallel(False)
-    cut.SetFuzzyValue(1e-4)
+    cut.SetRunParallel(True)
+    # No SetFuzzyValue: fuzzy Booleans are 1.5–2× slower here and the cut is
+    # clean without it.  The run-out is tangent to the body, which fuzzy makes
+    # WORSE, not better.
     cut.Build()
     if not cut.IsDone():
         raise RuntimeError("Compound flute cut failed (IsDone=False)")
@@ -549,30 +613,6 @@ def _add_end_view(msp, p, rc, front_cx):
         msp.add_circle((cx, cy), web_r, dxfattribs={"layer": "FRONT"})
 
 
-def _draw_outline(msp, p, rc, rs, chamfer):
-    """Analytical side-view outer profile — clean silhouette with no flute edges.
-
-    Iterates the same closed lathe profile used to revolve the solid.  Each
-    segment is mirrored across the centre axis to produce the upper and lower
-    half of the side view.  Axis-only segments (both endpoints on r=0) are
-    skipped because they belong on the centre-line layer.
-    End-face segments (same z, one endpoint on axis) are drawn as a single
-    vertical line spanning ±r.
-    """
-    pts = _profile_points(p, rc, rs, chamfer)
-    for i in range(len(pts) - 1):
-        r1, z1 = pts[i]
-        r2, z2 = pts[i + 1]
-        if r1 < EPS and r2 < EPS:
-            continue                             # pure axis segment — skip
-        if abs(z1 - z2) < EPS and r2 < EPS:
-            # end-face edge (r decreases to 0 at same z) → single vertical line
-            msp.add_line((z1, -r1), (z1, r1), dxfattribs={"layer": "OUTLINE"})
-            continue
-        msp.add_line((z1,  r1), (z2,  r2), dxfattribs={"layer": "OUTLINE"})
-        msp.add_line((z1, -r1), (z2, -r2), dxfattribs={"layer": "OUTLINE"})
-
-
 # ══════════════════════════════════════════════════════════ public entry point ══
 
 def _build_geometry_dxf(p: DrillProposalParams, geom_path: str, *,
@@ -580,9 +620,13 @@ def _build_geometry_dxf(p: DrillProposalParams, geom_path: str, *,
     """Write the geometry-only DXF (views + centrelines + dims). Returns anchor
     points the AutoCAD stage needs to place the GD&T / datum blocks.
 
-    Side view is drawn analytically from drill params — clean silhouette with
-    no flute edges.  The 3D solid is still built so the 3D viewer updates via
-    _mesh_cb while accoreconsole finalizes the DXF.
+    The side view is PROJECTED from the 3D solid (silhouette + flute/helix
+    edges) via the node.js three-edge-projection — this is the whole point of
+    building the solid, and is what puts the helical flutes in the drawing.
+
+    _progress(percent, message) is called at each pipeline stage.
+    _mesh_cb(verts_flat, indices_flat) fires once after tessellation so the 3D
+    viewer can show the solid while accoreconsole finalizes the DXF.
     """
     def _p(pct, msg):
         if _progress:
@@ -590,8 +634,6 @@ def _build_geometry_dxf(p: DrillProposalParams, geom_path: str, *,
 
     rc = p.cutting_diameter / 2.0
     rs = p.effective_shank_diameter / 2.0
-    chamfer = min(0.1 * p.effective_shank_diameter,
-                  rs * 0.8, max(p.shank_length * 0.5, 0.0))
 
     solid = _build_solid_cached(p, _progress=_progress, _base_pct=5, _end_pct=58)
 
@@ -600,6 +642,9 @@ def _build_geometry_dxf(p: DrillProposalParams, geom_path: str, *,
 
     if _mesh_cb:
         _mesh_cb(mesh_data['v'], mesh_data['i'])
+
+    _p(65, "Projecting edges…")
+    views = _project_via_nodejs(mesh_data)
 
     _p(78, "Writing DXF…")
     feature = max(p.overall_length, p.cutting_diameter * 4.0,
@@ -616,7 +661,8 @@ def _build_geometry_dxf(p: DrillProposalParams, geom_path: str, *,
     msp = doc.modelspace()
     _ensure_layers(doc)
 
-    _draw_outline(msp, p, rc, rs, chamfer)
+    for z1, x1, z2, x2 in views['side']:
+        msp.add_line((z1, x1), (z2, x2), dxfattribs={"layer": "OUTLINE"})
 
     _add_end_view(msp, p, rc, front_cx)
     _add_centerlines(msp, p, rc, front_cx, front_r, pad)
@@ -656,9 +702,9 @@ def preview_solid(params: DrillProposalParams, *,
     _orig_helix_pts  = _mod._HELIX_PTS_PER_TURN
     _orig_helix_min  = _mod._HELIX_MIN_PTS
     _orig_deflection = _mod._MESH_DEFLECTION
-    _mod._HELIX_PTS_PER_TURN = 12   # fewer spine points → faster MakePipe; still smooth
+    _mod._HELIX_PTS_PER_TURN = 14   # smooth helix, fast pipe+Boolean (cliff is 24)
     _mod._HELIX_MIN_PTS      = 8
-    _mod._MESH_DEFLECTION    = 0.20 # coarser mesh; fine for interactive preview
+    _mod._MESH_DEFLECTION    = 0.18 # coarser mesh; fine for interactive preview
 
     try:
         _p(2, "Starting…")
