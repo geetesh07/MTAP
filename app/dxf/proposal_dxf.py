@@ -18,6 +18,7 @@ import math
 import os
 import subprocess
 import tempfile
+import time
 
 import ezdxf
 
@@ -27,8 +28,18 @@ from app.utils.config import resource_path
 EPS = 1e-6
 _HELIX_PTS_PER_TURN = 24          # 24 pts/turn — smooth splines for DXF projection
 _HELIX_MIN_PTS      = 12          # minimum spine points per flute (floor for short bodies)
-_FLUTE_RADIUS_FRAC  = 0.72
 _MESH_DEFLECTION    = 0.12        # mm — coarser than 0.05; fine for DXF projection
+
+# ── flute geometry rules (per the tool-design spec) ───────────────────────────
+# Core diameter = the web left between flutes after the helix is cut, as a
+# fraction of Dc.  Deeper flute => smaller core.  flute_r = rc * (1 - core_frac),
+# so the cutter (centred on the Dc surface) penetrates to core_radius = core*rc.
+_CORE_DIA_FRAC = {2: 0.33, 3: 0.45, 4: 0.55}
+_CORE_DIA_DEFAULT = 0.45
+
+_TIP_OVERSHOOT_FRAC = 0.10        # helix starts 10% of point_length PAST the apex
+_SWAP_LEN_FRAC      = 1.3         # flute run-out ("swap") length = Dc * 1.3
+_SWAP_ANGLE_DEG     = 35.0        # run-out lifts radially out of the body at 35deg
 
 # ── solid cache ───────────────────────────────────────────────────────────────
 # Holds the last successfully-built OCC solid so repeat DXF/STEP requests with
@@ -100,6 +111,96 @@ def _make_helix_wire(z_start, length, radius, helix_angle_deg, phase_rad):
     interp.Perform()
     edge = BRepBuilderAPI_MakeEdge(interp.Curve()).Edge()
     return BRepBuilderAPI_MakeWire(edge).Wire()
+
+
+
+
+def _make_flute_spine(z_tip, z_swap_start, z_swap_end, radius,
+                      helix_angle_deg, phase_rad, cutter_r=0.0):
+    """Two-edge compound wire: helix + swap run-out, tangent-matched at the join.
+
+    Edge 1 — pure helix (z_tip → z_swap_start): interpolated independently so
+    it stays perfectly cylindrical (no pull from the swap points).
+
+    Edge 2 — swap (z_swap_start → z_exit): helix continues rotating AND radius
+    grows at tan(35°)/mm.  Truncated once the cutter clears the body so the
+    Boolean doesn't see a balloon.
+
+    Both edges share an end/start tangent equal to the helix direction at
+    z_swap_start, enforced via GeomAPI_Interpolate tangent constraints.
+    This gives C1 continuity — MakePipe sees a smooth join, no kink.
+    """
+    ha    = math.radians(helix_angle_deg)
+    pitch = math.pi * 2.0 * radius / math.tan(ha)
+    w     = 2.0 * math.pi / pitch
+
+    def angle_at(z):
+        return w * (z - z_tip) + phase_rad
+
+    # Junction tangent: derivative of helix at z_swap_start (unnormalized).
+    # GeomAPI_Interpolate.Load normalises internally (Scale=True default).
+    a_j  = angle_at(z_swap_start)
+    jvec = gp_Vec(-radius * w * math.sin(a_j),
+                   radius * w * math.cos(a_j),
+                   1.0)
+
+    # ── Edge 1: helix ─────────────────────────────────────────────────────────
+    main_len = max(z_swap_start - z_tip, 1e-6)
+    n1       = max(_HELIX_MIN_PTS, int(_HELIX_PTS_PER_TURN * main_len / pitch))
+    arr1     = TColgp_HArray1OfPnt(1, n1 + 1)
+    for i in range(n1 + 1):
+        z = z_tip + main_len * i / n1
+        a = angle_at(z)
+        arr1.SetValue(i + 1, gp_Pnt(radius * math.cos(a),
+                                    radius * math.sin(a), z))
+
+    tang1 = TColgp_Array1OfVec(1, n1 + 1)
+    flag1 = TColStd_HArray1OfBoolean(1, n1 + 1)
+    for j in range(1, n1 + 2):
+        tang1.SetValue(j, gp_Vec(0, 0, 1))
+        flag1.SetValue(j, False)
+    tang1.SetValue(n1 + 1, jvec)   # constrain END tangent → no free-end wiggle
+    flag1.SetValue(n1 + 1, True)
+
+    i1 = GeomAPI_Interpolate(arr1, False, 1e-4)
+    i1.Load(tang1, flag1)
+    i1.Perform()
+    e1 = BRepBuilderAPI_MakeEdge(i1.Curve()).Edge()
+
+    # ── Edge 2: swap ──────────────────────────────────────────────────────────
+    dr_dz    = math.tan(math.radians(_SWAP_ANGLE_DEG))
+    # Stop once the cutter disc fully clears the body surface (+ 0.5 mm margin).
+    # Beyond that the pipe doesn't intersect the solid — no point growing further.
+    r_cap    = radius + cutter_r + 0.5 if cutter_r > 0 else radius * 1.8
+    exit_dz  = (r_cap - radius) / dr_dz
+    eff_swap = min(max(z_swap_end - z_swap_start, 0.0), exit_dz)
+
+    N2   = 6
+    arr2 = TColgp_HArray1OfPnt(1, N2 + 1)
+    for i in range(N2 + 1):
+        z = z_swap_start + eff_swap * i / N2
+        r = radius + dr_dz * (z - z_swap_start)
+        a = angle_at(z)
+        arr2.SetValue(i + 1, gp_Pnt(r * math.cos(a), r * math.sin(a), z))
+
+    tang2 = TColgp_Array1OfVec(1, N2 + 1)
+    flag2 = TColStd_HArray1OfBoolean(1, N2 + 1)
+    for j in range(1, N2 + 2):
+        tang2.SetValue(j, gp_Vec(0, 0, 1))
+        flag2.SetValue(j, False)
+    tang2.SetValue(1, jvec)         # constrain START tangent → C1 at junction
+    flag2.SetValue(1, True)
+
+    i2 = GeomAPI_Interpolate(arr2, False, 1e-4)
+    i2.Load(tang2, flag2)
+    i2.Perform()
+    e2 = BRepBuilderAPI_MakeEdge(i2.Curve()).Edge()
+
+    # ── Combine ───────────────────────────────────────────────────────────────
+    wb = BRepBuilderAPI_MakeWire()
+    wb.Add(e1)
+    wb.Add(e2)
+    return wb.Wire()
 
 
 def _disk_profile(center, normal_dir, radius):
@@ -191,7 +292,9 @@ def _build_solid(p: DrillProposalParams, *,
         from OCP.BRep import BRep_Tool
         from OCP.TopLoc import TopLoc_Location
         from OCP.GeomAPI import GeomAPI_Interpolate
-        from OCP.TColgp import TColgp_HArray1OfPnt
+        from OCP.TColgp import TColgp_HArray1OfPnt, TColgp_Array1OfVec
+        from OCP.TColStd import TColStd_HArray1OfBoolean
+        from OCP.gp import gp_Vec
         from OCP.TopExp import TopExp_Explorer
         from OCP.TopAbs import TopAbs_FACE, TopAbs_REVERSED
         from OCP.TopoDS import TopoDS
@@ -200,12 +303,15 @@ def _build_solid(p: DrillProposalParams, *,
     # Re-bind to locals unconditionally — Python marks any name that appears in
     # an assignment anywhere in the function as a local for the ENTIRE function.
     # Without this the second call skips the if-block and hits UnboundLocalError.
-    gp_Pnt                 = _g["gp_Pnt"]
-    gp_Dir                 = _g["gp_Dir"]
-    gp_Ax1                 = _g["gp_Ax1"]
-    gp_Ax2                 = _g["gp_Ax2"]
-    BRepAlgoAPI_Cut        = _g["BRepAlgoAPI_Cut"]
-    BRepOffsetAPI_MakePipe = _g["BRepOffsetAPI_MakePipe"]
+    gp_Pnt                   = _g["gp_Pnt"]
+    gp_Dir                   = _g["gp_Dir"]
+    gp_Vec                   = _g["gp_Vec"]
+    gp_Ax1                   = _g["gp_Ax1"]
+    gp_Ax2                   = _g["gp_Ax2"]
+    BRepAlgoAPI_Cut          = _g["BRepAlgoAPI_Cut"]
+    BRepOffsetAPI_MakePipe   = _g["BRepOffsetAPI_MakePipe"]
+    TColgp_Array1OfVec       = _g["TColgp_Array1OfVec"]
+    TColStd_HArray1OfBoolean = _g["TColStd_HArray1OfBoolean"]
 
     rc = p.cutting_diameter / 2.0
     rs = p.effective_shank_diameter / 2.0
@@ -222,31 +328,47 @@ def _build_solid(p: DrillProposalParams, *,
     revolve_budget = max(5, (_end_pct - _base_pct) // 10)
     flute_budget   = _end_pct - _base_pct - revolve_budget
 
-    # Helical flute cuts — swept only along the Dc body region
-    flute_r = rc * _FLUTE_RADIUS_FRAC
-    helix_r = rc
     from app.utils.logging_setup import get_logger as _log
     _logger = _log()
 
-    # Build all flute pipes first, then cut with a single compound Boolean.
-    # Sequential per-flute cuts accumulate topology complexity across iterations
-    # and are numerically fragile when Dc != D (the pipe end is co-planar with
-    # the abrupt step face at x_body_end, causing degenerate intersections on
-    # the second and later cuts).  One compound cut is both faster and more robust.
-    pipe_shapes = []
-    entry_z = p.point_length * 0.90      # enter 10% into tip cone
-    # Overshoot body end slightly so the pipe doesn't end exactly co-planar with
-    # the Dc->D step face when diameters differ — avoids OCC degenerate-face issue.
-    overshoot = min(2.0, p.body_length * 0.02)
-    entry_len = p.body_length + (p.point_length - entry_z) + overshoot
+    # ── flute geometry per the tool-design spec ───────────────────────────────
+    # Cutter centre rides the Dc surface (helix_r = rc); cutter radius is chosen
+    # so the deepest cut leaves the required CORE diameter between flutes.
+    core_frac = _CORE_DIA_FRAC.get(p.n_flutes, _CORE_DIA_DEFAULT)
+    flute_r   = rc * (1.0 - core_frac)        # depth = (1-core) of rc
+    helix_r   = rc
+
+    # Tip side: start the helix 10% of the point length PAST the apex (z<0) so
+    # the flute runs fully out through the tip instead of stopping short.
+    tip_over = _TIP_OVERSHOOT_FRAC * p.point_length
+    if tip_over < EPS:
+        tip_over = _TIP_OVERSHOOT_FRAC * p.cutting_diameter
+    z_tip = -tip_over
+
+    # Swap zone: last Dc×1.3 of body, ending at the body/shank junction.
+    swap_len     = p.cutting_diameter * _SWAP_LEN_FRAC
+    z_swap_end   = p.x_body_end
+    z_swap_start = max(z_swap_end - swap_len, p.x_point_base + EPS)
+    _logger.info("Flute spec: n=%d core=%.0f%% flute_r=%.3f  z_tip=%.3f  "
+                 "swap=[%.3f..%.3f]",
+                 p.n_flutes, core_frac * 100, flute_r, z_tip,
+                 z_swap_start, z_swap_end)
+
+    # Per-flute budget: each flute gets an equal share of the range, split 40/60
+    # between pipe-build and boolean-cut so the bar moves at every stage.
+    per_flute  = flute_budget / max(p.n_flutes, 1)
+    pipe_share = int(per_flute * 0.40)
+    cut_share  = int(per_flute * 0.60)
 
     for i in range(p.n_flutes):
-        pct = _base_pct + revolve_budget + int(flute_budget * i / p.n_flutes)
-        _p(pct, f"Building flute pipe {i + 1}/{p.n_flutes}…")
+        base_i = _base_pct + revolve_budget + int(per_flute * i)
+
+        # ── pipe ────────────────────────────────────────────────────────────
+        _p(base_i, f"Building flute spine {i + 1}/{p.n_flutes}…")
 
         phase = (2 * math.pi * i) / p.n_flutes
-        spine = _make_helix_wire(entry_z, entry_len, helix_r,
-                                 p.helix_angle, phase)
+        spine = _make_flute_spine(z_tip, z_swap_start, z_swap_end, helix_r,
+                                  p.helix_angle, phase, cutter_r=flute_r)
 
         ha  = math.radians(p.helix_angle)
         tx  = -math.sin(phase) * math.cos(ha)
@@ -256,71 +378,36 @@ def _build_solid(p: DrillProposalParams, *,
         tang = gp_Dir(tx/mag, ty/mag, tz/mag)
 
         start_pt = gp_Pnt(helix_r * math.cos(phase),
-                          helix_r * math.sin(phase),
-                          entry_z)
+                          helix_r * math.sin(phase), z_tip)
         prof = _disk_profile(start_pt, tang, flute_r)
 
+        _p(base_i + pipe_share // 2, f"Sweeping flute {i + 1}/{p.n_flutes}…")
         try:
             pipe = BRepOffsetAPI_MakePipe(spine, prof)
             pipe.Build()
-            if pipe.IsDone():
-                pipe_shapes.append(pipe.Shape())
-            else:
-                _logger.error("Flute %d/%d: MakePipe failed (IsDone=False)", i+1, p.n_flutes)
         except Exception as exc:
-            _logger.error("Flute %d/%d: MakePipe exception: %s", i+1, p.n_flutes, exc)
+            raise RuntimeError(
+                f"Flute {i + 1}/{p.n_flutes}: MakePipe exception: {exc}") from exc
+        if not pipe.IsDone():
+            raise RuntimeError(
+                f"Flute {i + 1}/{p.n_flutes}: MakePipe failed (IsDone=False)")
+        time.sleep(0)   # release GIL — lets Qt event loop breathe on main thread
 
-    if not pipe_shapes:
-        raise RuntimeError("No flute pipes built — check log for MakePipe errors.")
-    if len(pipe_shapes) < p.n_flutes:
-        raise RuntimeError(
-            f"Only {len(pipe_shapes)}/{p.n_flutes} flute pipes built — aborting. "
-            f"Check log for per-flute error details.")
-
-    _p(_base_pct + revolve_budget + flute_budget, "Cutting all flutes (Boolean)…")
-
-    # Volume bookkeeping so the log can PROVE every flute was actually removed.
-    from OCP.GProp import GProp_GProps as _GProp
-    from OCP.BRepGProp import BRepGProp as _BRepGProp
-    def _vol(_sh):
-        _g2 = _GProp()
-        _BRepGProp.VolumeProperties_s(_sh, _g2)
-        return _g2.Mass()
-
-    # Cut each flute SEQUENTIALLY, not as one compound tool.
-    #
-    # The earlier approach built a TopoDS_Compound of all flute pipes and did a
-    # single BRepAlgoAPI_Cut(solid, compound).  OCC's boolean operation with a
-    # *compound* tool (disjoint sub-solids) is numerically fragile: depending on
-    # flute count and the Dc!=D step topology it silently subtracts only some
-    # sub-shapes — sometimes one flute, sometimes none (e.g. 4 flutes removed
-    # ~0 volume).  Because the failure shifts with build-to-build numerical
-    # state, it presented as "only one flute on first run, fixed after a
-    # rebuild".  Cutting one well-defined solid at a time is deterministic and
-    # robust; the body-end overshoot already neutralises the Dc!=D degeneracy.
-    vol_before = _vol(solid)
-    for idx, ps in enumerate(pipe_shapes):
-        v_pre = _vol(solid)
-        cut = BRepAlgoAPI_Cut(solid, ps)
+        # ── boolean ─────────────────────────────────────────────────────────
+        _p(base_i + pipe_share, f"Cutting flute {i + 1}/{p.n_flutes}…")
+        cut = BRepAlgoAPI_Cut(solid, pipe.Shape())
         cut.SetRunParallel(False)
         cut.SetFuzzyValue(1e-4)
         cut.Build()
         if not cut.IsDone():
             raise RuntimeError(
-                f"Flute cut {idx + 1}/{len(pipe_shapes)} failed "
-                f"(IsDone=False) — check log.")
+                f"Flute cut {i + 1}/{p.n_flutes} failed (IsDone=False)")
         solid = cut.Shape()
-        v_post = _vol(solid)
-        if v_pre - v_post < 1e-4:
-            _logger.warning("Flute cut %d/%d removed ~0 volume "
-                            "(%.4f) — flute may be missing.",
-                            idx + 1, len(pipe_shapes), v_pre - v_post)
+        time.sleep(0)   # release GIL
 
-    removed   = vol_before - _vol(solid)
-    per_flute = removed / len(pipe_shapes) if pipe_shapes else 0.0
-    _logger.info("Flute cut: %d flute(s), vol %.2f -> %.2f (removed %.2f, "
-                 "%.2f/flute)", len(pipe_shapes), vol_before, _vol(solid),
-                 removed, per_flute)
+        _p(base_i + pipe_share + cut_share,
+           f"Flute {i + 1}/{p.n_flutes} done")
+        _logger.info("Flute %d/%d done.", i + 1, p.n_flutes)
 
     return solid
 
@@ -329,9 +416,11 @@ def _build_solid(p: DrillProposalParams, *,
 
 def _tessellate(shape) -> dict:
     BRepMesh_IncrementalMesh(shape, _MESH_DEFLECTION).Perform()
+    time.sleep(0)   # release GIL after mesh generation
 
     verts, idxs, offset = [], [], 0
     exp = TopExp_Explorer(shape, TopAbs_FACE)
+    face_count = 0
     while exp.More():
         face = TopoDS.Face_s(exp.Current())
         loc  = TopLoc_Location()
@@ -340,15 +429,30 @@ def _tessellate(shape) -> dict:
         if tri is not None and tri.NbTriangles() > 0:
             n       = tri.NbNodes()
             flipped = (face.Orientation() == TopAbs_REVERSED)
-            for k in range(1, n + 1):
-                pnt = tri.Node(k)
-                verts += [pnt.X(), pnt.Y(), pnt.Z()]
-            for k in range(1, tri.NbTriangles() + 1):
-                a, b, c = tri.Triangle(k).Get()
+            # Pre-build per-face lists then extend once — avoids repeated
+            # list-grow overhead and reduces GIL hold time per iteration.
+            fv = [0.0] * (n * 3)
+            for k in range(n):
+                pnt = tri.Node(k + 1)
+                fv[k*3], fv[k*3+1], fv[k*3+2] = pnt.X(), pnt.Y(), pnt.Z()
+            verts.extend(fv)
+
+            nt = tri.NbTriangles()
+            fi = [0] * (nt * 3)
+            for k in range(nt):
+                a, b, c = tri.Triangle(k + 1).Get()
                 a -= 1; b -= 1; c -= 1
-                idxs += ([offset+a, offset+c, offset+b] if flipped
-                         else [offset+a, offset+b, offset+c])
+                base = k * 3
+                if flipped:
+                    fi[base], fi[base+1], fi[base+2] = offset+a, offset+c, offset+b
+                else:
+                    fi[base], fi[base+1], fi[base+2] = offset+a, offset+b, offset+c
+            idxs.extend(fi)
             offset += n
+
+        face_count += 1
+        if face_count % 20 == 0:
+            time.sleep(0)   # periodic GIL release so main thread stays live
         exp.Next()
 
     return {'v': verts, 'i': idxs}
