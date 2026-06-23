@@ -641,6 +641,84 @@ def _add_end_view(msp, p, rc, front_cx):
         msp.add_circle((cx, cy), web_r, dxfattribs={"layer": "FRONT"})
 
 
+def _project_od_flute_edges(solid, rc, *, tol=0.06, n_samp=120):
+    """Project the flute's OUTER edges (where the groove meets the OD cylinder)
+    to the side view — straight from the real 3D solid, not the mesh.
+
+    The flute groove meets the Dc cylinder along genuine BRep edges that lie on
+    radius == rc.  As the run-out lifts the cutter off the body these two edges
+    converge to a point, giving the clean 'teardrop'.  Inner groove-wall edges
+    (radius < rc) are excluded, so the run-out reads cleanly — this is the
+    "outer silhouette only" the drawing wants.  Only front-facing (Y > 0)
+    portions are kept, matching a hidden-line side view.
+
+    Returns a list of polylines, each a list of (z_axial, x_radial) points.
+    """
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopoDS import TopoDS
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+
+    emap = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(solid, TopAbs_EDGE, emap)     # unique edges only
+
+    polylines = []
+    for i in range(1, emap.Extent() + 1):
+        e   = TopoDS.Edge_s(emap.FindKey(i))
+        cur = BRepAdaptor_Curve(e)
+        u0, u1 = cur.FirstParameter(), cur.LastParameter()
+
+        pts, on_od, zmin, zmax = [], True, None, None
+        for k in range(n_samp + 1):
+            u = u0 + (u1 - u0) * k / n_samp
+            P = cur.Value(u)
+            if abs(math.hypot(P.X(), P.Y()) - rc) > tol:
+                on_od = False
+                break
+            pts.append((P.X(), P.Y(), P.Z()))
+            z = P.Z()
+            zmin = z if zmin is None else min(zmin, z)
+            zmax = z if zmax is None else max(zmax, z)
+
+        if not on_od or len(pts) < 2:
+            continue
+        if (zmax - zmin) < rc * 0.1:        # skip end circles (constant-Z loops)
+            continue
+
+        run = []                             # split into front-visible runs
+        for (X, Y, Z) in pts:
+            if Y > 0.0:
+                run.append((Z, X))
+            else:
+                if len(run) >= 2:
+                    polylines.append(run)
+                run = []
+        if len(run) >= 2:
+            polylines.append(run)
+    return polylines
+
+
+def _draw_outline(msp, p, rc, rs, chamfer):
+    """Side-view body silhouette (OD lines, tip cone, reinforcement, chamfer),
+    drawn from the same lathe profile that is revolved into the solid.  The
+    FLUTES are NOT drawn here — they come from `_project_od_flute_edges` so they
+    are projected from the 3D model.  Each profile segment is mirrored across the
+    axis; axis-only segments are skipped (they belong on the centre line).
+    """
+    pts = _profile_points(p, rc, rs, chamfer)
+    for i in range(len(pts) - 1):
+        r1, z1 = pts[i]
+        r2, z2 = pts[i + 1]
+        if r1 < EPS and r2 < EPS:
+            continue                                   # pure axis segment
+        if abs(z1 - z2) < EPS and r2 < EPS:
+            msp.add_line((z1, -r1), (z1, r1), dxfattribs={"layer": "OUTLINE"})
+            continue
+        msp.add_line((z1,  r1), (z2,  r2), dxfattribs={"layer": "OUTLINE"})
+        msp.add_line((z1, -r1), (z2, -r2), dxfattribs={"layer": "OUTLINE"})
+
+
 # ══════════════════════════════════════════════════════════ public entry point ══
 
 def _build_geometry_dxf(p: DrillProposalParams, geom_path: str, *,
@@ -648,9 +726,10 @@ def _build_geometry_dxf(p: DrillProposalParams, geom_path: str, *,
     """Write the geometry-only DXF (views + centrelines + dims). Returns anchor
     points the AutoCAD stage needs to place the GD&T / datum blocks.
 
-    The side view is PROJECTED from the 3D solid (silhouette + flute/helix
-    edges) via the node.js three-edge-projection — this is the whole point of
-    building the solid, and is what puts the helical flutes in the drawing.
+    Side view = body silhouette (from the revolved profile) + the flute edges
+    PROJECTED from the 3D solid (`_project_od_flute_edges`).  The flutes/run-out
+    therefore come from the real model, but only the clean outer (OD) edges are
+    drawn, so the run-out reads as the teardrop without inner-wall clutter.
 
     _progress(percent, message) is called at each pipeline stage.
     _mesh_cb(verts_flat, indices_flat) fires once after tessellation so the 3D
@@ -662,6 +741,8 @@ def _build_geometry_dxf(p: DrillProposalParams, geom_path: str, *,
 
     rc = p.cutting_diameter / 2.0
     rs = p.effective_shank_diameter / 2.0
+    chamfer = min(0.1 * p.effective_shank_diameter,
+                  rs * 0.8, max(p.shank_length * 0.5, 0.0))
 
     solid = _build_solid_cached(p, _progress=_progress, _base_pct=5, _end_pct=58)
 
@@ -671,8 +752,8 @@ def _build_geometry_dxf(p: DrillProposalParams, geom_path: str, *,
     if _mesh_cb:
         _mesh_cb(mesh_data['v'], mesh_data['i'])
 
-    _p(65, "Projecting edges…")
-    views = _project_via_nodejs(mesh_data)
+    _p(68, "Projecting flute edges…")
+    flute_polylines = _project_od_flute_edges(solid, rc)
 
     _p(78, "Writing DXF…")
     feature = max(p.overall_length, p.cutting_diameter * 4.0,
@@ -689,8 +770,11 @@ def _build_geometry_dxf(p: DrillProposalParams, geom_path: str, *,
     msp = doc.modelspace()
     _ensure_layers(doc)
 
-    for z1, x1, z2, x2 in views['side']:
-        msp.add_line((z1, x1), (z2, x2), dxfattribs={"layer": "OUTLINE"})
+    # body silhouette from the revolved profile; flutes projected from the solid
+    _draw_outline(msp, p, rc, rs, chamfer)
+    for pl in flute_polylines:
+        if len(pl) >= 2:
+            msp.add_lwpolyline(pl, dxfattribs={"layer": "OUTLINE"})
 
     _add_end_view(msp, p, rc, front_cx)
     _add_centerlines(msp, p, rc, front_cx, front_r, pad)
