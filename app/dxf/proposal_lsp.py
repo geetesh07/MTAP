@@ -336,21 +336,15 @@ def generate_proposal_link(p: DrillProposalParams, link_path: str, *,
     if errs:
         raise ValueError("\n".join(errs))
 
-    # Lazy import to avoid pulling OCC/node into the GUI process at startup.
-    from app.dxf.proposal_dxf import (
-        _build_solid_cached, _tessellate, _project_via_nodejs,
-    )
+    # Lazy import to avoid pulling OCC into the GUI process at startup.
+    from app.dxf.proposal_dxf import _build_solid_cached, _project_via_hlr
 
     _p(5, "Building solid…")
     solid = _build_solid_cached(p, _progress=progress, _base_pct=5, _end_pct=60)
 
-    _p(62, "Tessellating mesh…")
-    mesh = _tessellate(solid)
-
-    _p(70, "Projecting edges…")
-    views = _project_via_nodejs(mesh)
-    side  = views["side"]          # list of (z1, x1, z2, x2)
-    segs  = [((z1, x1), (z2, x2)) for (z1, x1, z2, x2) in side]
+    _p(70, "HLR projection…")
+    all_segs = _project_via_hlr(solid)
+    segs = [((z1, x1), (z2, x2)) for (z1, x1, z2, x2) in all_segs]
 
     _p(88, "Writing AutoCAD link…")
     os.makedirs(os.path.dirname(link_path), exist_ok=True)
@@ -360,7 +354,7 @@ def generate_proposal_link(p: DrillProposalParams, link_path: str, *,
         fh.write(text)
 
     ok = os.path.exists(link_path) and os.path.getsize(link_path) > 0
-    log.info("Proposal AutoCAD link %s (%d segs, %d bytes) -> %s",
+    log.info("Proposal AutoCAD link %s (HLR %d segs, %d bytes) -> %s",
              "OK" if ok else "FAILED", len(segs),
              os.path.getsize(link_path) if ok else 0, link_path)
     _p(100, "AutoCAD link ready — type DMTAP")

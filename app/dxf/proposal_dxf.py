@@ -439,6 +439,169 @@ def _tessellate(shape) -> dict:
     return {'v': verts, 'i': idxs}
 
 
+# ══════════════════════════════════════════════════════════ HLR projection ══
+
+def _project_via_hlr(solid, *, skip_od_radius: float | None = None) -> list:
+    """BRep hidden-line removal side view (project along +Y → XZ plane).
+
+    Returns list of (z1,x1,z2,x2) segments in the same convention as
+    _project_via_nodejs: z=axial, x=radial.  Uses OCC HLRBRep_Algo so the
+    result is exact (same quality as Fusion 360 drawings) — outer silhouette,
+    helix groove edges, teardrop run-out — all clean, no mesh artefacts.
+    """
+    from OCP.HLRBRep import HLRBRep_Algo, HLRBRep_HLRToShape
+    from OCP.HLRAlgo import HLRAlgo_Projector
+    from OCP.gp import gp_Ax2, gp_Pnt, gp_Dir
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopoDS import TopoDS
+
+    # Orthographic projection along +Y; X axis of plane = global +X (radial)
+    proj = HLRAlgo_Projector(gp_Ax2(gp_Pnt(0, 0, 0),
+                                     gp_Dir(0, 1, 0),
+                                     gp_Dir(1, 0, 0)))
+    algo = HLRBRep_Algo()
+    algo.Add(solid)
+    algo.Projector(proj)
+    algo.Update()
+    algo.Hide()
+
+    to_shape = HLRBRep_HLRToShape(algo)
+
+    segs = []
+    # VCompound  = visible sharp edges (groove lines, tip edges)
+    # OutLineVCompound = visible silhouette contour (outer body profile)
+    for compound in (to_shape.VCompound(), to_shape.OutLineVCompound()):
+        try:
+            if compound.IsNull():
+                continue
+        except Exception:
+            continue
+        exp = TopExp_Explorer(compound, TopAbs_EDGE)
+        while exp.More():
+            edge = TopoDS.Edge_s(exp.Current())
+            try:
+                from OCP.GeomAbs import GeomAbs_Line
+                cur  = BRepAdaptor_Curve(edge)
+                u0, u1 = cur.FirstParameter(), cur.LastParameter()
+                span = u1 - u0
+                if abs(span) < 1e-10:
+                    exp.Next()
+                    continue
+                # Lines need only 2 pts; curves need enough to follow curvature.
+                # DO NOT use span*60 — a 60mm line produces 3600 sub-0.05mm
+                # micro-segments that all get filtered by _clean_side_segments.
+                if cur.GetType() == GeomAbs_Line:
+                    n = 1
+                else:
+                    n = max(24, int(abs(span) * 6))
+                # Sample the edge first to (a) check OD filter, (b) build pts.
+                edge_pts = []
+                for k in range(n + 1):
+                    u = u0 + span * k / n
+                    P = cur.Value(u)
+                    edge_pts.append((-P.Y(), P.X()))  # (axial z, radial x)
+
+                # Skip entire edge if ALL points lie on OD surface — these are
+                # the boundary edges where the groove meets the OD cylinder and
+                # they cause tick marks on the body outline.
+                if skip_od_radius is not None:
+                    od_tol = skip_od_radius * 0.06
+                    if all(abs(abs(x) - skip_od_radius) < od_tol
+                           for _, x in edge_pts):
+                        exp.Next()
+                        continue
+
+                prev = None
+                for pt in edge_pts:
+                    if prev is not None:
+                        z1, x1 = prev
+                        z2, x2 = pt
+                        if math.hypot(z2 - z1, x2 - x1) > 0.01:
+                            segs.append((z1, x1, z2, x2))
+                    prev = pt
+            except Exception:
+                pass
+            exp.Next()
+
+    return _clean_side_segments(segs)
+
+
+def _chain_segments(segs, tol=0.5):
+    """Join connected (z,x) segments into polyline chains.
+
+    Returns list of polylines, each a list of (z,x) tuples.  Eliminates
+    mid-chain endpoint grips that show up in AutoCAD as tick marks when the
+    same logical line is split into many individual LINE entities.
+    """
+    if not segs:
+        return []
+
+    # Build undirected adjacency: endpoint → list of (other_endpoint, seg_idx, flipped)
+    from collections import defaultdict
+    adj = defaultdict(list)
+
+    def key(z, x):
+        return (round(z / tol), round(x / tol))
+
+    nodes = []
+    for i, (z1, x1, z2, x2) in enumerate(segs):
+        k1, k2 = key(z1, x1), key(z2, x2)
+        nodes.append((k1, k2))
+        adj[k1].append((k2, i, False))
+        adj[k2].append((k1, i, True))
+
+    used = [False] * len(segs)
+    chains = []
+
+    for start_i in range(len(segs)):
+        if used[start_i]:
+            continue
+        used[start_i] = True
+        z1, x1, z2, x2 = segs[start_i]
+        chain = [(z1, x1), (z2, x2)]
+        cur_key = key(z2, x2)
+
+        # extend forward
+        while True:
+            extended = False
+            for (nk, ni, flip) in adj[cur_key]:
+                if used[ni]:
+                    continue
+                used[ni] = True
+                sz1, sx1, sz2, sx2 = segs[ni]
+                nxt = (sz1, sx1) if flip else (sz2, sx2)
+                chain.append(nxt)
+                cur_key = key(*nxt)
+                extended = True
+                break
+            if not extended:
+                break
+
+        # extend backward from start
+        cur_key = key(z1, x1)
+        while True:
+            extended = False
+            for (nk, ni, flip) in adj[cur_key]:
+                if used[ni]:
+                    continue
+                used[ni] = True
+                sz1, sx1, sz2, sx2 = segs[ni]
+                nxt = (sz2, sx2) if flip else (sz1, sx1)
+                chain.insert(0, nxt)
+                cur_key = key(*nxt)
+                extended = True
+                break
+            if not extended:
+                break
+
+        if len(chain) >= 2:
+            chains.append(chain)
+
+    return chains
+
+
 # ══════════════════════════════════════════════════════════ Node.js projection ══
 
 def _resolve_node() -> str:
@@ -486,7 +649,7 @@ def _project_via_nodejs(mesh_data: dict) -> dict:
     return {'side': side}
 
 
-def _clean_side_segments(segs, q: float = 0.02, min_len: float = 0.05):
+def _clean_side_segments(segs, q: float = 0.02, min_len: float = 0.02):
     """De-noise the projected side view.
 
     The visible-edge projection of the flute run-out emits a lot of junk:
@@ -641,7 +804,7 @@ def _add_end_view(msp, p, rc, front_cx):
         msp.add_circle((cx, cy), web_r, dxfattribs={"layer": "FRONT"})
 
 
-def _project_od_flute_edges(solid, rc, *, tol=0.06, n_samp=120):
+def _project_od_flute_edges(solid, rc, *, tol=0.06, n_samp=120, z_min=None):
     """Project the flute's OUTER edges (where the groove meets the OD cylinder)
     to the side view — straight from the real 3D solid, not the mesh.
 
@@ -685,38 +848,25 @@ def _project_od_flute_edges(solid, rc, *, tol=0.06, n_samp=120):
             continue
         if (zmax - zmin) < rc * 0.1:        # skip end circles (constant-Z loops)
             continue
+        if z_min is not None and zmin < z_min - tol:
+            continue                          # outside swap zone — skip body OD edges
 
         run = []                             # split into front-visible runs
-        for (X, Y, Z) in pts:
-            if Y > 0.0:
+        for k, (X, Y, Z) in enumerate(pts):
+            if Y >= 0.0:
                 run.append((Z, X))
             else:
+                if run and k > 0:            # interpolate exact Y=0 crossing
+                    pX, pY, pZ = pts[k - 1]
+                    if pY > 0.0:
+                        t  = pY / (pY - Y)
+                        run.append((pZ + t * (Z - pZ), pX + t * (X - pX)))
                 if len(run) >= 2:
                     polylines.append(run)
                 run = []
         if len(run) >= 2:
             polylines.append(run)
     return polylines
-
-
-def _draw_outline(msp, p, rc, rs, chamfer):
-    """Side-view body silhouette (OD lines, tip cone, reinforcement, chamfer),
-    drawn from the same lathe profile that is revolved into the solid.  The
-    FLUTES are NOT drawn here — they come from `_project_od_flute_edges` so they
-    are projected from the 3D model.  Each profile segment is mirrored across the
-    axis; axis-only segments are skipped (they belong on the centre line).
-    """
-    pts = _profile_points(p, rc, rs, chamfer)
-    for i in range(len(pts) - 1):
-        r1, z1 = pts[i]
-        r2, z2 = pts[i + 1]
-        if r1 < EPS and r2 < EPS:
-            continue                                   # pure axis segment
-        if abs(z1 - z2) < EPS and r2 < EPS:
-            msp.add_line((z1, -r1), (z1, r1), dxfattribs={"layer": "OUTLINE"})
-            continue
-        msp.add_line((z1,  r1), (z2,  r2), dxfattribs={"layer": "OUTLINE"})
-        msp.add_line((z1, -r1), (z2, -r2), dxfattribs={"layer": "OUTLINE"})
 
 
 # ══════════════════════════════════════════════════════════ public entry point ══
@@ -726,10 +876,12 @@ def _build_geometry_dxf(p: DrillProposalParams, geom_path: str, *,
     """Write the geometry-only DXF (views + centrelines + dims). Returns anchor
     points the AutoCAD stage needs to place the GD&T / datum blocks.
 
-    Side view = body silhouette (from the revolved profile) + the flute edges
-    PROJECTED from the 3D solid (`_project_od_flute_edges`).  The flutes/run-out
-    therefore come from the real model, but only the clean outer (OD) edges are
-    drawn, so the run-out reads as the teardrop without inner-wall clutter.
+    Side view uses two HLR passes to keep the body outline clean:
+      Pass 1 – body-only revolve → clean outer silhouette (no groove interference).
+      Pass 2 – full solid with skip_od_radius → flute groove curves + swap run-out,
+               with OD-face intersection edges (swap triangle noise) stripped out.
+    Chain stitching joins adjacent fragments; back-face artifacts and sub-noise
+    stubs (<3.5 mm z-span) are filtered.
 
     _progress(percent, message) is called at each pipeline stage.
     _mesh_cb(verts_flat, indices_flat) fires once after tessellation so the 3D
@@ -752,8 +904,11 @@ def _build_geometry_dxf(p: DrillProposalParams, geom_path: str, *,
     if _mesh_cb:
         _mesh_cb(mesh_data['v'], mesh_data['i'])
 
-    _p(68, "Projecting flute edges…")
-    flute_polylines = _project_od_flute_edges(solid, rc)
+    # Single HLR pass — full solid, visible edges only.
+    # Matches _prove_hlr.py (yellow layer) exactly: raw segments, no body/flute split,
+    # no z-span filter, no skip_od_radius. Only back-face end-cap circles are dropped.
+    _p(68, "HLR projection…")
+    all_segs = _project_via_hlr(solid)
 
     _p(78, "Writing DXF…")
     feature = max(p.overall_length, p.cutting_diameter * 4.0,
@@ -770,11 +925,11 @@ def _build_geometry_dxf(p: DrillProposalParams, geom_path: str, *,
     msp = doc.modelspace()
     _ensure_layers(doc)
 
-    # body silhouette from the revolved profile; flutes projected from the solid
-    _draw_outline(msp, p, rc, rs, chamfer)
-    for pl in flute_polylines:
-        if len(pl) >= 2:
-            msp.add_lwpolyline(pl, dxfattribs={"layer": "OUTLINE"})
+    # Draw every segment as an individual LINE — exactly what _prove_hlr.py does.
+    # No filtering: trust HLR completely. The back face vertical line,
+    # chamfer edges and all body geometry come through as-is.
+    for z1, x1, z2, x2 in all_segs:
+        msp.add_line((z1, x1), (z2, x2), dxfattribs={"layer": "OUTLINE"})
 
     _add_end_view(msp, p, rc, front_cx)
     _add_centerlines(msp, p, rc, front_cx, front_r, pad)
