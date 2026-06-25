@@ -12,18 +12,6 @@ Threading:
     load_bytes() is the only public mesh-loading API.  It expects VBO data
     already computed (bytes: interleaved [px py pz nx ny nz] × n_verts).
     Call it from the main thread after the worker finishes its numpy work.
-
-Why ctypes instead of QOpenGLFunctions:
-    Qt6 deprecated and removed QOpenGLFunctions from some PyQt6 wheel builds
-    (it raises ImportError at runtime in packaged executables).  All GL calls
-    used here are OpenGL 1.0/1.1 and are exported from opengl32.dll on Windows,
-    so ctypes works correctly with the Qt-managed context.
-
-Why CompatibilityProfile:
-    CoreProfile 3.3 requires an explicit VAO; without one glVertexAttribPointer
-    is silently ignored → black screen with no error.  CompatibilityProfile
-    provides the implicit default VAO (id=0) so attribute setup works without
-    needing QOpenGLVertexArrayObject (also absent from some PyQt6 builds).
 """
 
 import ctypes
@@ -31,7 +19,8 @@ import math
 import sys
 
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
-from PyQt6.QtOpenGL import QOpenGLShaderProgram, QOpenGLShader, QOpenGLBuffer
+from PyQt6.QtOpenGL import (QOpenGLShaderProgram, QOpenGLShader,
+                             QOpenGLBuffer, QOpenGLVertexArrayObject)
 from PyQt6.QtGui import QMatrix4x4, QVector3D, QSurfaceFormat
 from PyQt6.QtCore import Qt, QPoint, QSize
 from PyQt6.QtWidgets import QSizePolicy
@@ -133,20 +122,18 @@ class DrillPreview3D(QOpenGLWidget):
     def __init__(self, parent=None):
         fmt = QSurfaceFormat()
         fmt.setVersion(3, 3)
-        # CompatibilityProfile: default VAO (id=0) is implicitly bound.
-        # CoreProfile would require an explicit QOpenGLVertexArrayObject,
-        # which is also absent from some PyQt6 wheel builds.
-        fmt.setProfile(QSurfaceFormat.OpenGLContextProfile.CompatibilityProfile)
+        fmt.setProfile(QSurfaceFormat.OpenGLContextProfile.CoreProfile)
         fmt.setDepthBufferSize(24)
-        fmt.setSamples(4)
+        QSurfaceFormat.setDefaultFormat(fmt)
 
         super().__init__(parent)
         self.setFormat(fmt)
         self.setMinimumSize(QSize(320, 260))
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
-        self._prog: QOpenGLShaderProgram | None = None
-        self._vbo:  QOpenGLBuffer | None        = None
+        self._prog: QOpenGLShaderProgram | None        = None
+        self._vbo:  QOpenGLBuffer | None               = None
+        self._vao:  QOpenGLVertexArrayObject | None    = None
 
         self._n_verts:  int  = 0
         self._has_mesh: bool = False
@@ -193,6 +180,11 @@ class DrillPreview3D(QOpenGLWidget):
     def initializeGL(self) -> None:
         _glEnable(_GL_DEPTH_TEST)
         _glClearColor(0.086, 0.078, 0.059, 1.0)
+
+        self._vao = QOpenGLVertexArrayObject(self)
+        if not self._vao.create():
+            log.error("DrillPreview3D: VAO creation failed")
+            return
 
         self._prog = QOpenGLShaderProgram(self)
         ok  = self._prog.addShaderFromSourceCode(_VERT_SHADER, _VERT_SRC)
@@ -244,11 +236,8 @@ class DrillPreview3D(QOpenGLWidget):
         view.lookAt(eye, self._center, QVector3D(0.0, 1.0, 0.0))
         model = QMatrix4x4()
 
-        # Draw — bind VBO and set up attributes every frame.
-        # With CompatibilityProfile the implicit default VAO (id=0) is always
-        # active; the attribute state is retained, but re-specifying each frame
-        # is explicit, cheap, and requires no QOpenGLVertexArrayObject.
         self._prog.bind()
+        self._vao.bind()
         self._vbo.bind()
 
         stride = 6 * 4
@@ -265,6 +254,7 @@ class DrillPreview3D(QOpenGLWidget):
         self._prog.disableAttributeArray(0)
         self._prog.disableAttributeArray(1)
         self._vbo.release()
+        self._vao.release()
         self._prog.release()
 
     # ── VBO upload (called from paintGL while GL context is current) ──────────
