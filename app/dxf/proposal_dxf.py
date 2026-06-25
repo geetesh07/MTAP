@@ -530,60 +530,46 @@ def _project_via_hlr(solid, *, skip_od_radius: float | None = None) -> list:
     return _clean_side_segments(segs)
 
 
-def _project_via_hlr_end(solid, rc: float, *, cx: float = 0.0, cy: float = 0.0) -> list:
-    """Project cutting lips and chisel edge to the end view (looking along +Z).
+def _end_view_segs(p, rc: float, n_flutes: int, *, cx: float = 0.0, cy: float = 0.0) -> list:
+    """Analytical cutting-lip + chisel segments for the drill end view.
 
-    No HLR visibility solver — we iterate the solid's BRep edges directly and
-    project to XY by dropping Z.  The cutting lips and chisel edge are the only
-    BRep edges whose XY projection has r_min < rc*0.90; every other edge (OD
-    cylinder, flute-OD junctions, shank faces) sits at r ≈ rc and is filtered
-    out.  The OD circle is drawn analytically by the caller, so we skip it here.
+    The BRep Boolean solid decomposes the two cutting lips into different numbers
+    of sub-edges (flute 1 = one edge, flute 2 = two sub-edges) due to the order
+    of the Boolean cuts.  Projecting BRep edges directly gives an asymmetric result
+    that cannot be fixed by filtering.  The analytical approach is the only way to
+    guarantee a symmetric, correct end view for any drill configuration.
 
-    This replaces HLRBRep_Algo which caused 60-80 s hangs on helical geometry.
+    Geometry: cutting lips are straight lines from the chisel area (web radius,
+    angle perpendicular to cutting lip) to the OD at lip_angle.  Chisel edge
+    is the short segment connecting the two inner endpoints.
     """
-    from OCP.BRepAdaptor import BRepAdaptor_Curve
-    from OCP.TopExp import TopExp_Explorer
-    from OCP.TopAbs import TopAbs_EDGE
-    from OCP.TopoDS import TopoDS
-    from OCP.GeomAbs import GeomAbs_Line
+    core_frac = _CORE_DIA_FRAC.get(n_flutes, _CORE_DIA_DEFAULT)
+    web_r = rc * core_frac
+
+    lip_ang = math.radians(90.0 - p.helix_angle)
+    chi_ang = lip_ang + math.pi / 2.0
+    cos_l, sin_l = math.cos(lip_ang), math.sin(lip_ang)
+    cos_c, sin_c = math.cos(chi_ang), math.sin(chi_ang)
 
     segs = []
-    exp = TopExp_Explorer(solid, TopAbs_EDGE)
-    while exp.More():
-        edge = TopoDS.Edge_s(exp.Current())
-        try:
-            cur = BRepAdaptor_Curve(edge)
-            u0, u1 = cur.FirstParameter(), cur.LastParameter()
-            span = u1 - u0
-            if abs(span) < 1e-10:
-                exp.Next()
-                continue
-            n = 1 if cur.GetType() == GeomAbs_Line else max(24, int(abs(span) * 6))
-            edge_pts = []
-            for k in range(n + 1):
-                u = u0 + span * k / n
-                P = cur.Value(u)
-                edge_pts.append((cx + P.X(), cy + P.Y()))
-            # Keep only cutting-lip edges: span from near-center to near-OD.
-            # Flute groove edges stay near one radius; helix body edges stay at rc.
-            radii = [math.hypot(x - cx, y - cy) for x, y in edge_pts]
-            min_r, max_r = min(radii), max(radii)
-            if min_r >= rc * 0.40 or max_r <= rc * 0.85:
-                exp.Next()
-                continue
-            prev = None
-            for pt in edge_pts:
-                if prev is not None:
-                    x1, y1 = prev
-                    x2, y2 = pt
-                    if math.hypot(x2 - x1, y2 - y1) > 0.01:
-                        segs.append((x1, y1, x2, y2))
-                prev = pt
-        except Exception:
-            pass
-        exp.Next()
-
-    return _clean_side_segments(segs)
+    if n_flutes == 2:
+        od1 = (cx + rc * cos_l,   cy + rc * sin_l)
+        od2 = (cx - rc * cos_l,   cy - rc * sin_l)
+        b1  = (cx + web_r * cos_c, cy + web_r * sin_c)
+        b2  = (cx - web_r * cos_c, cy - web_r * sin_c)
+        segs = [
+            (b1[0], b1[1], od1[0], od1[1]),   # cutting lip 1
+            (b2[0], b2[1], od2[0], od2[1]),   # cutting lip 2
+            (b1[0], b1[1], b2[0],  b2[1]),    # chisel edge
+        ]
+    else:
+        for i in range(n_flutes):
+            a = lip_ang + 2.0 * math.pi * i / n_flutes
+            outer = (cx + rc    * math.cos(a), cy + rc    * math.sin(a))
+            inner = (cx + web_r * math.cos(a + math.pi),
+                     cy + web_r * math.sin(a + math.pi))
+            segs.append((inner[0], inner[1], outer[0], outer[1]))
+    return segs
 
 
 def _heal_segs(segs: list, *, snap_tol: float = 0.20) -> list:
@@ -866,14 +852,10 @@ def _add_dims(msp, p, rc, rs, h):
             _log2().warning("Angular point-angle dimension failed (non-fatal): %s", exc)
 
 
-def _add_end_view(msp, solid, rc: float, front_cx: float) -> None:
-    """HLR-projected drill end view (looking from tip along +Z toward shank)."""
-    # OD circle: exact, analytical
+def _add_end_view(msp, p, rc: float, front_cx: float) -> None:
+    """Drill end view: OD circle + analytical cutting lips + chisel edge."""
     msp.add_circle((front_cx, 0.0), rc, dxfattribs={"layer": "FRONT"})
-    # Cutting lips + chisel edge from BRep HLR
-    segs = _project_via_hlr_end(solid, rc, cx=front_cx, cy=0.0)
-    healed = _heal_segs(segs)
-    for x1, y1, x2, y2 in healed:
+    for x1, y1, x2, y2 in _end_view_segs(p, rc, p.n_flutes, cx=front_cx, cy=0.0):
         msp.add_line((x1, y1), (x2, y2), dxfattribs={"layer": "FRONT"})
 
 
@@ -1004,7 +986,7 @@ def _build_geometry_dxf(p: DrillProposalParams, geom_path: str, *,
     for z1, x1, z2, x2 in all_segs:
         msp.add_line((z1, x1), (z2, x2), dxfattribs={"layer": "OUTLINE"})
 
-    _add_end_view(msp, solid, rc, front_cx)
+    _add_end_view(msp, p, rc, front_cx)
     _add_centerlines(msp, p, rc, front_cx, front_r, pad)
     _add_dims(msp, p, rc, rs, h)
 

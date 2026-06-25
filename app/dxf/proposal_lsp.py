@@ -181,8 +181,7 @@ def _segs_lsp(segs) -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _build_link_text(p: DrillProposalParams, side_segs, blocks_dir: str,
-                     meta: dict | None = None,
-                     end_segs=None) -> str:
+                     meta: dict | None = None) -> str:
     """Assemble the full mtap_link.lsp text for the proposal drill."""
     meta = meta or {}
     lines: list[str] = [_LIBRARY]
@@ -237,19 +236,16 @@ def _build_link_text(p: DrillProposalParams, side_segs, blocks_dir: str,
     a("")
 
     # ── end view ──────────────────────────────────────────────────────────────
+    from app.dxf.proposal_dxf import _end_view_segs, _CORE_DIA_FRAC, _CORE_DIA_DEFAULT
+    core_frac = _CORE_DIA_FRAC.get(p.n_flutes, _CORE_DIA_DEFAULT)
+    web_r = rc * core_frac
+    ev_segs = _end_view_segs(p, rc, p.n_flutes, cx=front_cx, cy=0.0)
+    ev_lines = [((x1, y1), (x2, y2)) for (x1, y1, x2, y2) in ev_segs]
     a(f"(setq MTAP:ENDC {_pt(front_cx, 0.0)})")
     a(f"(setq MTAP:ENDR {_num(rc)})")
-    if end_segs is not None:
-        # HLR-projected cutting lips from 3D solid (x1,y1,x2,y2 flat tuples)
-        hlr_lines = [((x1, y1), (x2, y2)) for (x1, y1, x2, y2) in end_segs]
-        a(f"(setq MTAP:ENDLINES {_segs_lsp(hlr_lines)})")
-        a(f"(setq MTAP:ENDWEB nil)")
-        a(f"(setq MTAP:ENDWEBR nil)")
-    else:
-        end_lines, web_r = _end_view_lines(p, rc, front_cx)
-        a(f"(setq MTAP:ENDLINES {_segs_lsp(end_lines)})")
-        a(f"(setq MTAP:ENDWEB {_bool(web_r is not None)})")
-        a(f"(setq MTAP:ENDWEBR {_num(web_r) if web_r is not None else 'nil'})")
+    a(f"(setq MTAP:ENDLINES {_segs_lsp(ev_lines)})")
+    a(f"(setq MTAP:ENDWEB {_bool(p.n_flutes > 2)})")
+    a(f"(setq MTAP:ENDWEBR {_num(web_r) if p.n_flutes > 2 else 'nil'})")
     a("")
 
     # ── centerlines ───────────────────────────────────────────────────────────
@@ -346,29 +342,21 @@ def generate_proposal_link(p: DrillProposalParams, link_path: str, *,
 
     # Lazy import to avoid pulling OCC into the GUI process at startup.
     from app.dxf.proposal_dxf import (
-        _build_solid_cached, _project_via_hlr, _project_via_hlr_end, _heal_segs,
+        _build_solid_cached, _project_via_hlr, _heal_segs,
     )
 
     _p(5, "Building solid…")
     solid = _build_solid_cached(p, _progress=progress, _base_pct=5, _end_pct=60)
-
-    rc = p.cutting_diameter / 2.0
-    rs = p.effective_shank_diameter / 2.0
-    front_cx = p.overall_length + max(rc, rs) * 2.5   # must match _build_link_text line 201
 
     _p(70, "HLR projection…")
     all_segs = _project_via_hlr(solid)
     all_segs = _heal_segs(all_segs)
     segs = [((z1, x1), (z2, x2)) for (z1, x1, z2, x2) in all_segs]
 
-    _p(82, "HLR end view…")
-    end_raw = _project_via_hlr_end(solid, rc, cx=front_cx, cy=0.0)
-    end_segs = _heal_segs(end_raw)
-
     _p(88, "Writing AutoCAD link…")
     os.makedirs(os.path.dirname(link_path), exist_ok=True)
     blocks_dir = LspWriter._resolve_blocks_dir(os.path.dirname(link_path))
-    text = _build_link_text(p, segs, blocks_dir, meta, end_segs=end_segs)
+    text = _build_link_text(p, segs, blocks_dir, meta)
     with open(link_path, "w", encoding="utf-8") as fh:
         fh.write(text)
 
