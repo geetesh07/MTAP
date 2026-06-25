@@ -337,13 +337,14 @@ def generate_proposal_link(p: DrillProposalParams, link_path: str, *,
         raise ValueError("\n".join(errs))
 
     # Lazy import to avoid pulling OCC into the GUI process at startup.
-    from app.dxf.proposal_dxf import _build_solid_cached, _project_via_hlr
+    from app.dxf.proposal_dxf import _build_solid_cached, _project_via_hlr, _heal_segs
 
     _p(5, "Building solid…")
     solid = _build_solid_cached(p, _progress=progress, _base_pct=5, _end_pct=60)
 
     _p(70, "HLR projection…")
     all_segs = _project_via_hlr(solid)
+    all_segs = _heal_segs(all_segs)
     segs = [((z1, x1), (z2, x2)) for (z1, x1, z2, x2) in all_segs]
 
     _p(88, "Writing AutoCAD link…")

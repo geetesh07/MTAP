@@ -528,6 +528,51 @@ def _project_via_hlr(solid, *, skip_od_radius: float | None = None) -> list:
     return _clean_side_segments(segs)
 
 
+def _heal_segs(segs: list, *, snap_tol: float = 0.20) -> list:
+    """Bridge micro-gaps in the raw HLR segment list.
+
+    OCC BRep face junctions produce slightly non-coincident endpoints.
+    snap_tol=0.20 mm is deliberate: the cone-outline base → cutting-lip start
+    gap is ~0.163 mm for a 10 mm drill, just above the old 0.15 mm default,
+    which is why it was not being closed.  0.20 mm catches it without
+    over-bridging anywhere else.
+    """
+    if not segs:
+        return segs
+
+    extra: list = []
+
+    # Grid pitch = snap_tol so nearby endpoints land in adjacent cells.
+    def _gk(z, x):
+        return (int(math.floor(z / snap_tol)), int(math.floor(x / snap_tol)))
+
+    # One representative per grid cell.
+    unique_eps: list = []
+    seen: set = set()
+    for z1, x1, z2, x2 in segs:
+        for z, x in ((z1, x1), (z2, x2)):
+            k = _gk(z, x)
+            if k not in seen:
+                seen.add(k)
+                unique_eps.append((z, x))
+
+    # Bridge all pairs of distinct representatives within snap_tol.
+    added: set = set()
+    for i in range(len(unique_eps)):
+        za, xa = unique_eps[i]
+        for j in range(i + 1, len(unique_eps)):
+            zb, xb = unique_eps[j]
+            dist = math.hypot(zb - za, xb - xa)
+            if 0.005 < dist < snap_tol:
+                key = (round(za * 1000), round(xa * 1000),
+                       round(zb * 1000), round(xb * 1000))
+                if key not in added:
+                    added.add(key)
+                    extra.append((za, xa, zb, xb))
+
+    return segs + extra
+
+
 def _chain_segments(segs, tol=0.5):
     """Join connected (z,x) segments into polyline chains.
 
@@ -904,11 +949,11 @@ def _build_geometry_dxf(p: DrillProposalParams, geom_path: str, *,
     if _mesh_cb:
         _mesh_cb(mesh_data['v'], mesh_data['i'])
 
-    # Single HLR pass — full solid, visible edges only.
-    # Matches _prove_hlr.py (yellow layer) exactly: raw segments, no body/flute split,
-    # no z-span filter, no skip_od_radius. Only back-face end-cap circles are dropped.
     _p(68, "HLR projection…")
     all_segs = _project_via_hlr(solid)
+
+    _p(72, "Healing gaps…")
+    all_segs = _heal_segs(all_segs)
 
     _p(78, "Writing DXF…")
     feature = max(p.overall_length, p.cutting_diameter * 4.0,
