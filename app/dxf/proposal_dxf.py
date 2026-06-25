@@ -531,79 +531,57 @@ def _project_via_hlr(solid, *, skip_od_radius: float | None = None) -> list:
 
 
 def _project_via_hlr_end(solid, rc: float, *, cx: float = 0.0, cy: float = 0.0) -> list:
-    """BRep-exact HLR end view looking along +Z (from tip toward shank).
+    """Project cutting lips and chisel edge to the end view (looking along +Z).
 
-    OCC classifies the cutting lips and chisel edge as 'hidden' (HCompound)
-    because the flute helical face wraps around in a way that confuses the
-    visibility solver.  Fusion 360 draws them as solid lines.  We mirror that
-    by including HCompound edges with r < rc*0.85 (inner geometry only) while
-    taking the OD silhouette from OutLineVCompound and discarding VCompound
-    (which only contains spurious OD-surface and near-OD edges).
+    No HLR visibility solver — we iterate the solid's BRep edges directly and
+    project to XY by dropping Z.  The cutting lips and chisel edge are the only
+    BRep edges whose XY projection has r_min < rc*0.90; every other edge (OD
+    cylinder, flute-OD junctions, shank faces) sits at r ≈ rc and is filtered
+    out.  The OD circle is drawn analytically by the caller, so we skip it here.
+
+    This replaces HLRBRep_Algo which caused 60-80 s hangs on helical geometry.
     """
-    from OCP.HLRBRep import HLRBRep_Algo, HLRBRep_HLRToShape
-    from OCP.HLRAlgo import HLRAlgo_Projector
-    from OCP.gp import gp_Ax2, gp_Pnt, gp_Dir
     from OCP.BRepAdaptor import BRepAdaptor_Curve
     from OCP.TopExp import TopExp_Explorer
     from OCP.TopAbs import TopAbs_EDGE
     from OCP.TopoDS import TopoDS
     from OCP.GeomAbs import GeomAbs_Line
 
-    proj = HLRAlgo_Projector(gp_Ax2(gp_Pnt(0, 0, 0),
-                                     gp_Dir(0, 0, 1),
-                                     gp_Dir(1, 0, 0)))
-    algo = HLRBRep_Algo()
-    algo.Add(solid)
-    algo.Projector(proj)
-    algo.Update()
-    algo.Hide()
-
-    to_shape = HLRBRep_HLRToShape(algo)
-
-    # OD circle: analytically exact — the caller draws it; we only return inner geometry.
-    # Cutting lips and chisel edge land in HCompound.  They span from chisel-edge radius
-    # (~rc*0.33) to the OD (r=rc).  Pure OD arcs (flute-groove/OD junctions) have
-    # r_min ≈ rc (both endpoints on OD), so we keep only edges whose MINIMUM sample
-    # radius is below rc*0.90 — those are guaranteed to be the cutting lips / chisel.
-    inner_r_min_thr = rc * 0.90
-
     segs = []
-    try:
-        hc = to_shape.HCompound()
-        if not hc.IsNull():
-            exp = TopExp_Explorer(hc, TopAbs_EDGE)
-            while exp.More():
-                edge = TopoDS.Edge_s(exp.Current())
-                try:
-                    cur = BRepAdaptor_Curve(edge)
-                    u0, u1 = cur.FirstParameter(), cur.LastParameter()
-                    span = u1 - u0
-                    if abs(span) < 1e-10:
-                        exp.Next()
-                        continue
-                    n = 1 if cur.GetType() == GeomAbs_Line else max(24, int(abs(span) * 6))
-                    edge_pts = []
-                    for k in range(n + 1):
-                        u = u0 + span * k / n
-                        P = cur.Value(u)
-                        edge_pts.append((cx + P.X(), cy + P.Y()))
-                    min_r = min(math.hypot(x - cx, y - cy) for x, y in edge_pts)
-                    if min_r >= inner_r_min_thr:
-                        exp.Next()
-                        continue   # pure OD arc — skip, caller will draw OD circle
-                    prev = None
-                    for pt in edge_pts:
-                        if prev is not None:
-                            x1, y1 = prev
-                            x2, y2 = pt
-                            if math.hypot(x2 - x1, y2 - y1) > 0.01:
-                                segs.append((x1, y1, x2, y2))
-                        prev = pt
-                except Exception:
-                    pass
+    exp = TopExp_Explorer(solid, TopAbs_EDGE)
+    while exp.More():
+        edge = TopoDS.Edge_s(exp.Current())
+        try:
+            cur = BRepAdaptor_Curve(edge)
+            u0, u1 = cur.FirstParameter(), cur.LastParameter()
+            span = u1 - u0
+            if abs(span) < 1e-10:
                 exp.Next()
-    except Exception:
-        pass
+                continue
+            n = 1 if cur.GetType() == GeomAbs_Line else max(24, int(abs(span) * 6))
+            edge_pts = []
+            for k in range(n + 1):
+                u = u0 + span * k / n
+                P = cur.Value(u)
+                edge_pts.append((cx + P.X(), cy + P.Y()))
+            # Keep only cutting-lip edges: span from near-center to near-OD.
+            # Flute groove edges stay near one radius; helix body edges stay at rc.
+            radii = [math.hypot(x - cx, y - cy) for x, y in edge_pts]
+            min_r, max_r = min(radii), max(radii)
+            if min_r >= rc * 0.40 or max_r <= rc * 0.85:
+                exp.Next()
+                continue
+            prev = None
+            for pt in edge_pts:
+                if prev is not None:
+                    x1, y1 = prev
+                    x2, y2 = pt
+                    if math.hypot(x2 - x1, y2 - y1) > 0.01:
+                        segs.append((x1, y1, x2, y2))
+                prev = pt
+        except Exception:
+            pass
+        exp.Next()
 
     return _clean_side_segments(segs)
 
