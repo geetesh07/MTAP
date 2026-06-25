@@ -353,7 +353,8 @@ def generate_proposal_link(p: DrillProposalParams, link_path: str, *,
     solid = _build_solid_cached(p, _progress=progress, _base_pct=5, _end_pct=60)
 
     rc = p.cutting_diameter / 2.0
-    front_cx = p.overall_length + rc * 2 * 2.5
+    rs = p.effective_shank_diameter / 2.0
+    front_cx = p.overall_length + max(rc, rs) * 2.5   # must match _build_link_text line 201
 
     _p(70, "HLR projection…")
     all_segs = _project_via_hlr(solid)
