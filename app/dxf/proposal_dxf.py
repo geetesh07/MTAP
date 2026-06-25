@@ -441,38 +441,24 @@ def _tessellate(shape) -> dict:
 
 # ══════════════════════════════════════════════════════════ HLR projection ══
 
-def _project_via_hlr(solid, *, skip_od_radius: float | None = None) -> list:
-    """BRep hidden-line removal side view (project along +Y → XZ plane).
+def _hlr_poly_tessellate(solid):
+    """Tessellate solid for PolyAlgo HLR (idempotent — OCC skips if already done)."""
+    from OCP.BRepMesh import BRepMesh_IncrementalMesh
+    # 0.02 mm linear / 0.1 rad angular — fine enough for a 10-mm drill tip without
+    # blowing up on a 100-mm body.  BRepMesh is idempotent: the second call (for the
+    # end view) is a no-op because the triangulation is cached in the shape.
+    BRepMesh_IncrementalMesh(solid, 0.02, False, 0.1, True)
 
-    Returns list of (z1,x1,z2,x2) segments in the same convention as
-    _project_via_nodejs: z=axial, x=radial.  Uses OCC HLRBRep_Algo so the
-    result is exact (same quality as Fusion 360 drawings) — outer silhouette,
-    helix groove edges, teardrop run-out — all clean, no mesh artefacts.
-    """
-    from OCP.HLRBRep import HLRBRep_Algo, HLRBRep_HLRToShape
-    from OCP.HLRAlgo import HLRAlgo_Projector
-    from OCP.gp import gp_Ax2, gp_Pnt, gp_Dir
+
+def _hlr_poly_extract(ts) -> list:
+    """Extract (u1,v1,u2,v2) segments from a HLRBRep_PolyHLRToShape result."""
     from OCP.BRepAdaptor import BRepAdaptor_Curve
     from OCP.TopExp import TopExp_Explorer
     from OCP.TopAbs import TopAbs_EDGE
     from OCP.TopoDS import TopoDS
 
-    # Orthographic projection along +Y; X axis of plane = global +X (radial)
-    proj = HLRAlgo_Projector(gp_Ax2(gp_Pnt(0, 0, 0),
-                                     gp_Dir(0, 1, 0),
-                                     gp_Dir(1, 0, 0)))
-    algo = HLRBRep_Algo()
-    algo.Add(solid)
-    algo.Projector(proj)
-    algo.Update()
-    algo.Hide()
-
-    to_shape = HLRBRep_HLRToShape(algo)
-
     segs = []
-    # VCompound  = visible sharp edges (groove lines, tip edges)
-    # OutLineVCompound = visible silhouette contour (outer body profile)
-    for compound in (to_shape.VCompound(), to_shape.OutLineVCompound()):
+    for compound in (ts.VCompound(), ts.OutLineVCompound()):
         try:
             if compound.IsNull():
                 continue
@@ -482,48 +468,142 @@ def _project_via_hlr(solid, *, skip_od_radius: float | None = None) -> list:
         while exp.More():
             edge = TopoDS.Edge_s(exp.Current())
             try:
-                from OCP.GeomAbs import GeomAbs_Line
-                cur  = BRepAdaptor_Curve(edge)
+                cur = BRepAdaptor_Curve(edge)
                 u0, u1 = cur.FirstParameter(), cur.LastParameter()
-                span = u1 - u0
-                if abs(span) < 1e-10:
+                if abs(u1 - u0) < 1e-10:
                     exp.Next()
                     continue
-                # Lines need only 2 pts; curves need enough to follow curvature.
-                # DO NOT use span*60 — a 60mm line produces 3600 sub-0.05mm
-                # micro-segments that all get filtered by _clean_side_segments.
-                if cur.GetType() == GeomAbs_Line:
-                    n = 1
-                else:
-                    n = max(24, int(abs(span) * 6))
-                # Sample the edge first to (a) check OD filter, (b) build pts.
-                edge_pts = []
-                for k in range(n + 1):
-                    u = u0 + span * k / n
-                    P = cur.Value(u)
-                    edge_pts.append((-P.Y(), P.X()))  # (axial z, radial x)
-
-                # Skip entire edge if ALL points lie on OD surface — these are
-                # the boundary edges where the groove meets the OD cylinder and
-                # they cause tick marks on the body outline.
-                if skip_od_radius is not None:
-                    od_tol = skip_od_radius * 0.06
-                    if all(abs(abs(x) - skip_od_radius) < od_tol
-                           for _, x in edge_pts):
-                        exp.Next()
-                        continue
-
-                prev = None
-                for pt in edge_pts:
-                    if prev is not None:
-                        z1, x1 = prev
-                        z2, x2 = pt
-                        if math.hypot(z2 - z1, x2 - x1) > 0.01:
-                            segs.append((z1, x1, z2, x2))
-                    prev = pt
+                P0 = cur.Value(u0)
+                P1 = cur.Value(u1)
+                segs.append((P0, P1))
             except Exception:
                 pass
             exp.Next()
+    return segs
+
+
+def _project_via_hlr(solid, *, skip_od_radius: float | None = None) -> list:
+    """Mesh-based hidden-line removal side view (project along +Y → XZ plane).
+
+    Switched from HLRBRep_Algo (BRep exact) to HLRBRep_PolyAlgo (mesh).
+    The BRep approach missed the chisel-edge region because the cutting-lip
+    BRep edge starts at z≈1 mm — the flute doesn't intersect the cone below
+    that.  The mesh has triangles all the way to the apex vertex (z=0), so
+    the silhouette naturally closes there.  OCC's own tessellator at 0.02 mm
+    deflection gives far cleaner results than the old Three.js mesh while
+    keeping the swap/run-out smooth.
+    """
+    from OCP.HLRBRep import HLRBRep_PolyAlgo, HLRBRep_PolyHLRToShape
+    from OCP.HLRAlgo import HLRAlgo_Projector
+    from OCP.gp import gp_Ax2, gp_Pnt, gp_Dir
+
+    _hlr_poly_tessellate(solid)
+
+    # Orthographic projection along +Y; X axis of view plane = global +X (radial)
+    proj = HLRAlgo_Projector(gp_Ax2(gp_Pnt(0, 0, 0),
+                                     gp_Dir(0, 1, 0),
+                                     gp_Dir(1, 0, 0)))
+    algo = HLRBRep_PolyAlgo()
+    algo.Projector(proj)
+    algo.Load(solid)
+    algo.Update()
+
+    ts = HLRBRep_PolyHLRToShape()
+    ts.Update(algo)
+    raw = _hlr_poly_extract(ts)
+
+    segs = []
+    for P0, P1 in raw:
+        # Coordinate mapping: (-P.Y(), P.X()) → (axial_z, radial_x)
+        z1, x1 = -P0.Y(), P0.X()
+        z2, x2 = -P1.Y(), P1.X()
+
+        if skip_od_radius is not None:
+            od_tol = skip_od_radius * 0.06
+            if (abs(abs(x1) - skip_od_radius) < od_tol and
+                    abs(abs(x2) - skip_od_radius) < od_tol):
+                continue
+
+        if math.hypot(z2 - z1, x2 - x1) > 0.01:
+            segs.append((z1, x1, z2, x2))
+
+    return _clean_side_segments(segs)
+
+
+def _project_via_hlr_end(solid, rc: float, *, cx: float = 0.0, cy: float = 0.0) -> list:
+    """BRep-exact HLR end view looking along +Z (from tip toward shank).
+
+    OCC classifies the cutting lips and chisel edge as 'hidden' (HCompound)
+    because the flute helical face wraps around in a way that confuses the
+    visibility solver.  Fusion 360 draws them as solid lines.  We mirror that
+    by including HCompound edges with r < rc*0.85 (inner geometry only) while
+    taking the OD silhouette from OutLineVCompound and discarding VCompound
+    (which only contains spurious OD-surface and near-OD edges).
+    """
+    from OCP.HLRBRep import HLRBRep_Algo, HLRBRep_HLRToShape
+    from OCP.HLRAlgo import HLRAlgo_Projector
+    from OCP.gp import gp_Ax2, gp_Pnt, gp_Dir
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopoDS import TopoDS
+    from OCP.GeomAbs import GeomAbs_Line
+
+    proj = HLRAlgo_Projector(gp_Ax2(gp_Pnt(0, 0, 0),
+                                     gp_Dir(0, 0, 1),
+                                     gp_Dir(1, 0, 0)))
+    algo = HLRBRep_Algo()
+    algo.Add(solid)
+    algo.Projector(proj)
+    algo.Update()
+    algo.Hide()
+
+    to_shape = HLRBRep_HLRToShape(algo)
+
+    # OD circle: analytically exact — the caller draws it; we only return inner geometry.
+    # Cutting lips and chisel edge land in HCompound.  They span from chisel-edge radius
+    # (~rc*0.33) to the OD (r=rc).  Pure OD arcs (flute-groove/OD junctions) have
+    # r_min ≈ rc (both endpoints on OD), so we keep only edges whose MINIMUM sample
+    # radius is below rc*0.90 — those are guaranteed to be the cutting lips / chisel.
+    inner_r_min_thr = rc * 0.90
+
+    segs = []
+    try:
+        hc = to_shape.HCompound()
+        if not hc.IsNull():
+            exp = TopExp_Explorer(hc, TopAbs_EDGE)
+            while exp.More():
+                edge = TopoDS.Edge_s(exp.Current())
+                try:
+                    cur = BRepAdaptor_Curve(edge)
+                    u0, u1 = cur.FirstParameter(), cur.LastParameter()
+                    span = u1 - u0
+                    if abs(span) < 1e-10:
+                        exp.Next()
+                        continue
+                    n = 1 if cur.GetType() == GeomAbs_Line else max(24, int(abs(span) * 6))
+                    edge_pts = []
+                    for k in range(n + 1):
+                        u = u0 + span * k / n
+                        P = cur.Value(u)
+                        edge_pts.append((cx + P.X(), cy + P.Y()))
+                    min_r = min(math.hypot(x - cx, y - cy) for x, y in edge_pts)
+                    if min_r >= inner_r_min_thr:
+                        exp.Next()
+                        continue   # pure OD arc — skip, caller will draw OD circle
+                    prev = None
+                    for pt in edge_pts:
+                        if prev is not None:
+                            x1, y1 = prev
+                            x2, y2 = pt
+                            if math.hypot(x2 - x1, y2 - y1) > 0.01:
+                                segs.append((x1, y1, x2, y2))
+                        prev = pt
+                except Exception:
+                    pass
+                exp.Next()
+    except Exception:
+        pass
 
     return _clean_side_segments(segs)
 
@@ -808,45 +888,15 @@ def _add_dims(msp, p, rc, rs, h):
             _log2().warning("Angular point-angle dimension failed (non-fatal): %s", exc)
 
 
-def _add_end_view(msp, p, rc, front_cx):
-    """Analytical drill tip end-view (looking at the cutting face along the axis).
-
-    Draws: outer body circle, two cutting lips, chisel edge.
-    Uses only basic DXF entities so the result is clean and exact.
-    """
-    cx, cy  = front_cx, 0.0
-    web_r   = rc * 0.15          # web / core radius (≈ 15 % of Dc/2)
-
-    # Perfect outer body circle
-    msp.add_circle((cx, cy), rc, dxfattribs={"layer": "FRONT"})
-
-    # Lip direction: right-hand drill, first cutting lip exits the outer circle at
-    # (90° - helix_angle) from the +X axis in the end view.
-    lip_ang = math.radians(90.0 - p.helix_angle)
-    chi_ang = lip_ang + math.pi / 2       # chisel edge ⊥ to lips
-
-    cos_l, sin_l = math.cos(lip_ang), math.sin(lip_ang)
-    cos_c, sin_c = math.cos(chi_ang), math.sin(chi_ang)
-
-    if p.n_flutes == 2:
-        # Two cutting lips (parallel to each other, offset by the chisel edge)
-        # and one short chisel-edge line connecting their inner ends.
-        p1 = (cx + rc    *  cos_l, cy + rc    *  sin_l)   # lip 1 outer
-        p2 = (cx - rc    *  cos_l, cy - rc    *  sin_l)   # lip 2 outer
-        b1 = (cx + web_r *  cos_c, cy + web_r *  sin_c)   # lip 1 inner
-        b2 = (cx - web_r *  cos_c, cy - web_r *  sin_c)   # lip 2 inner
-
-        msp.add_line(b1, p1, dxfattribs={"layer": "FRONT"})   # cutting lip 1
-        msp.add_line(b2, p2, dxfattribs={"layer": "FRONT"})   # cutting lip 2
-        msp.add_line(b1, b2, dxfattribs={"layer": "FRONT"})   # chisel edge
-    else:
-        # For 3 / 4 flutes: n equally-spaced lips radiating from a web circle
-        for i in range(p.n_flutes):
-            a    = lip_ang + 2 * math.pi * i / p.n_flutes
-            outer = (cx + rc    * math.cos(a),          cy + rc    * math.sin(a))
-            inner = (cx + web_r * math.cos(a + math.pi), cy + web_r * math.sin(a + math.pi))
-            msp.add_line(inner, outer, dxfattribs={"layer": "FRONT"})
-        msp.add_circle((cx, cy), web_r, dxfattribs={"layer": "FRONT"})
+def _add_end_view(msp, solid, rc: float, front_cx: float) -> None:
+    """HLR-projected drill end view (looking from tip along +Z toward shank)."""
+    # OD circle: exact, analytical
+    msp.add_circle((front_cx, 0.0), rc, dxfattribs={"layer": "FRONT"})
+    # Cutting lips + chisel edge from BRep HLR
+    segs = _project_via_hlr_end(solid, rc, cx=front_cx, cy=0.0)
+    healed = _heal_segs(segs)
+    for x1, y1, x2, y2 in healed:
+        msp.add_line((x1, y1), (x2, y2), dxfattribs={"layer": "FRONT"})
 
 
 def _project_od_flute_edges(solid, rc, *, tol=0.06, n_samp=120, z_min=None):
@@ -976,7 +1026,7 @@ def _build_geometry_dxf(p: DrillProposalParams, geom_path: str, *,
     for z1, x1, z2, x2 in all_segs:
         msp.add_line((z1, x1), (z2, x2), dxfattribs={"layer": "OUTLINE"})
 
-    _add_end_view(msp, p, rc, front_cx)
+    _add_end_view(msp, solid, rc, front_cx)
     _add_centerlines(msp, p, rc, front_cx, front_r, pad)
     _add_dims(msp, p, rc, rs, h)
 
