@@ -33,6 +33,8 @@ hiddenimports = [
     'PyQt6.QtOpenGL',
     # STEP export — OCP modules imported lazily inside generate_step()
     'OCP.STEPControl', 'OCP.Interface', 'OCP.IFSelect',
+    # HLR end-view projection — imported lazily inside _side_view_from_solid()
+    'OCP.HLRBRep', 'OCP.HLRAlgo', 'OCP.BRepAdaptor', 'OCP.TopTools',
 ]
 # Pull in the whole ezdxf package (dimension renderer, fonts, standards are
 # imported dynamically and would be missed by static analysis otherwise).

@@ -530,45 +530,77 @@ def _project_via_hlr(solid, *, skip_od_radius: float | None = None) -> list:
     return _clean_side_segments(segs)
 
 
-def _end_view_segs(p, rc: float, n_flutes: int, *, cx: float = 0.0, cy: float = 0.0) -> list:
-    """Analytical cutting-lip + chisel segments for the drill end view.
+def _end_view_from_solid(solid, p, rc: float, *,
+                          cx: float = 0.0, cy: float = 0.0) -> list:
+    """HLR end-view projection looking along +Z (viewer at z=-∞, tip closest).
 
-    The BRep Boolean solid decomposes the two cutting lips into different numbers
-    of sub-edges (flute 1 = one edge, flute 2 = two sub-edges) due to the order
-    of the Boolean cuts.  Projecting BRep edges directly gives an asymmetric result
-    that cannot be fixed by filtering.  The analytical approach is the only way to
-    guarantee a symmetric, correct end view for any drill configuration.
+    Same HLRBRep_PolyAlgo pipeline as the side view — just a different projector
+    direction.  The tessellation is idempotent so calling this after the side-view
+    HLR is essentially free.  The OD circle is drawn analytically by the caller,
+    so edges at radius ≈ rc are filtered here to avoid duplicates.
 
-    Geometry: cutting lips are straight lines from the chisel area (web radius,
-    angle perpendicular to cutting lip) to the OD at lip_angle.  Chisel edge
-    is the short segment connecting the two inner endpoints.
+    Coordinate mapping for a +Z projection with X_axis = +X:
+        view-X = global X  →  P.X()
+        view-Y = global Y  →  P.Y()
     """
-    core_frac = _CORE_DIA_FRAC.get(n_flutes, _CORE_DIA_DEFAULT)
-    web_r = rc * core_frac
+    from OCP.HLRBRep import HLRBRep_PolyAlgo, HLRBRep_PolyHLRToShape
+    from OCP.HLRAlgo import HLRAlgo_Projector
+    from OCP.gp import gp_Ax2, gp_Pnt, gp_Dir
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopoDS import TopoDS
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
 
-    lip_ang = math.radians(90.0 - p.helix_angle)
-    chi_ang = lip_ang + math.pi / 2.0
-    cos_l, sin_l = math.cos(lip_ang), math.sin(lip_ang)
-    cos_c, sin_c = math.cos(chi_ang), math.sin(chi_ang)
+    _hlr_poly_tessellate(solid)
 
-    segs = []
-    if n_flutes == 2:
-        od1 = (cx + rc * cos_l,   cy + rc * sin_l)
-        od2 = (cx - rc * cos_l,   cy - rc * sin_l)
-        b1  = (cx + web_r * cos_c, cy + web_r * sin_c)
-        b2  = (cx - web_r * cos_c, cy - web_r * sin_c)
-        segs = [
-            (b1[0], b1[1], od1[0], od1[1]),   # cutting lip 1
-            (b2[0], b2[1], od2[0], od2[1]),   # cutting lip 2
-            (b1[0], b1[1], b2[0],  b2[1]),    # chisel edge
-        ]
-    else:
-        for i in range(n_flutes):
-            a = lip_ang + 2.0 * math.pi * i / n_flutes
-            outer = (cx + rc    * math.cos(a), cy + rc    * math.sin(a))
-            inner = (cx + web_r * math.cos(a + math.pi),
-                     cy + web_r * math.sin(a + math.pi))
-            segs.append((inner[0], inner[1], outer[0], outer[1]))
+    # Look along +Z; view-plane X = global X, view-plane Y = global Y.
+    proj = HLRAlgo_Projector(gp_Ax2(gp_Pnt(0, 0, 0),
+                                     gp_Dir(0, 0, 1),
+                                     gp_Dir(1, 0, 0)))
+    algo = HLRBRep_PolyAlgo()
+    algo.Projector(proj)
+    algo.Load(solid)
+    algo.Update()
+
+    ts = HLRBRep_PolyHLRToShape()
+    ts.Update(algo)
+
+    od_tol = rc * 0.06
+    segs: list = []
+    for compound in (ts.VCompound(), ts.OutLineVCompound()):
+        try:
+            if compound.IsNull():
+                continue
+        except Exception:
+            continue
+        exp = TopExp_Explorer(compound, TopAbs_EDGE)
+        while exp.More():
+            edge = TopoDS.Edge_s(exp.Current())
+            try:
+                cur = BRepAdaptor_Curve(edge)
+                u0, u1 = cur.FirstParameter(), cur.LastParameter()
+                if abs(u1 - u0) < 1e-10:
+                    exp.Next()
+                    continue
+                P0 = cur.Value(u0)
+                P1 = cur.Value(u1)
+
+                x1, y1 = P0.X() + cx, P0.Y() + cy
+                x2, y2 = P1.X() + cx, P1.Y() + cy
+
+                # Skip OD ring edges — caller draws it as a perfect circle arc
+                r0 = math.hypot(P0.X(), P0.Y())
+                r1 = math.hypot(P1.X(), P1.Y())
+                if abs(r0 - rc) < od_tol and abs(r1 - rc) < od_tol:
+                    exp.Next()
+                    continue
+
+                if math.hypot(x2 - x1, y2 - y1) > 0.01:
+                    segs.append((x1, y1, x2, y2))
+            except Exception:
+                pass
+            exp.Next()
+
     return segs
 
 
@@ -852,10 +884,10 @@ def _add_dims(msp, p, rc, rs, h):
             _log2().warning("Angular point-angle dimension failed (non-fatal): %s", exc)
 
 
-def _add_end_view(msp, p, rc: float, front_cx: float) -> None:
-    """Drill end view: OD circle + analytical cutting lips + chisel edge."""
+def _add_end_view(msp, p, rc: float, front_cx: float, solid) -> None:
+    """Drill end view: OD circle + solid-projected cutting lips + chisel edge."""
     msp.add_circle((front_cx, 0.0), rc, dxfattribs={"layer": "FRONT"})
-    for x1, y1, x2, y2 in _end_view_segs(p, rc, p.n_flutes, cx=front_cx, cy=0.0):
+    for x1, y1, x2, y2 in _end_view_from_solid(solid, p, rc, cx=front_cx, cy=0.0):
         msp.add_line((x1, y1), (x2, y2), dxfattribs={"layer": "FRONT"})
 
 
@@ -986,7 +1018,7 @@ def _build_geometry_dxf(p: DrillProposalParams, geom_path: str, *,
     for z1, x1, z2, x2 in all_segs:
         msp.add_line((z1, x1), (z2, x2), dxfattribs={"layer": "OUTLINE"})
 
-    _add_end_view(msp, p, rc, front_cx)
+    _add_end_view(msp, p, rc, front_cx, solid)
     _add_centerlines(msp, p, rc, front_cx, front_r, pad)
     _add_dims(msp, p, rc, rs, h)
 

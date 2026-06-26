@@ -181,7 +181,7 @@ def _segs_lsp(segs) -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _build_link_text(p: DrillProposalParams, side_segs, blocks_dir: str,
-                     meta: dict | None = None) -> str:
+                     meta: dict | None = None, *, solid=None) -> str:
     """Assemble the full mtap_link.lsp text for the proposal drill."""
     meta = meta or {}
     lines: list[str] = [_LIBRARY]
@@ -236,10 +236,10 @@ def _build_link_text(p: DrillProposalParams, side_segs, blocks_dir: str,
     a("")
 
     # ── end view ──────────────────────────────────────────────────────────────
-    from app.dxf.proposal_dxf import _end_view_segs, _CORE_DIA_FRAC, _CORE_DIA_DEFAULT
+    from app.dxf.proposal_dxf import _end_view_from_solid, _CORE_DIA_FRAC, _CORE_DIA_DEFAULT
     core_frac = _CORE_DIA_FRAC.get(p.n_flutes, _CORE_DIA_DEFAULT)
     web_r = rc * core_frac
-    ev_segs = _end_view_segs(p, rc, p.n_flutes, cx=front_cx, cy=0.0)
+    ev_segs = _end_view_from_solid(solid, p, rc, cx=front_cx, cy=0.0)
     ev_lines = [((x1, y1), (x2, y2)) for (x1, y1, x2, y2) in ev_segs]
     a(f"(setq MTAP:ENDC {_pt(front_cx, 0.0)})")
     a(f"(setq MTAP:ENDR {_num(rc)})")
@@ -356,7 +356,7 @@ def generate_proposal_link(p: DrillProposalParams, link_path: str, *,
     _p(88, "Writing AutoCAD link…")
     os.makedirs(os.path.dirname(link_path), exist_ok=True)
     blocks_dir = LspWriter._resolve_blocks_dir(os.path.dirname(link_path))
-    text = _build_link_text(p, segs, blocks_dir, meta)
+    text = _build_link_text(p, segs, blocks_dir, meta, solid=solid)
     with open(link_path, "w", encoding="utf-8") as fh:
         fh.write(text)
 
