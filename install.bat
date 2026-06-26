@@ -51,11 +51,11 @@ if errorlevel 1 (
     echo.
     echo [ERROR] cadquery-ocp install failed.
     echo.
-    echo   This package is ~1 GB and requires Python 3.10 or 3.11.
+    echo   This package is ~1 GB.
     echo   Make sure you have:
     echo     - Stable internet connection
     echo     - At least 3 GB free disk space
-    echo     - Python 3.10 or 3.11  (NOT 3.12+)
+    echo     - Python 3.10, 3.11, or 3.12
     echo.
     pause
     exit /b 1
