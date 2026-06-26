@@ -27,7 +27,12 @@ def _base_dir() -> str:
 
 
 def log_dir() -> str:
-    d = os.path.join(_base_dir(), "logs")
+    if getattr(sys, "frozen", False):
+        # Installed to Program Files — write logs to user's AppData instead
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        d = os.path.join(base, "MTAP", "logs")
+    else:
+        d = os.path.join(_base_dir(), "logs")
     os.makedirs(d, exist_ok=True)
     return d
 
