@@ -888,6 +888,179 @@ def _project_via_nodejs(mesh_data: dict) -> dict:
     return {'side': side}
 
 
+# ══════════════════════════════════════════════════════ FreeCAD projection ══
+
+_FREECAD_SEARCH_PATHS = [
+    r"C:\Program Files\FreeCAD 1.0\bin\FreeCADCmd.exe",
+    r"C:\Program Files\FreeCAD 0.21\bin\FreeCADCmd.exe",
+    r"C:\Program Files\FreeCAD 0.20\bin\FreeCADCmd.exe",
+    r"C:\Program Files (x86)\FreeCAD 1.0\bin\FreeCADCmd.exe",
+    r"C:\Program Files (x86)\FreeCAD 0.21\bin\FreeCADCmd.exe",
+    "/usr/bin/freecadcmd",
+    "/usr/local/bin/freecadcmd",
+]
+
+
+def _find_freecad_cmd() -> str | None:
+    """Return path to FreeCADCmd.exe / freecadcmd, or None if not installed."""
+    import shutil
+    for name in ("FreeCADCmd", "freecadcmd", "freecad-cmd"):
+        found = shutil.which(name)
+        if found:
+            return os.path.abspath(found)
+    for p in _FREECAD_SEARCH_PATHS:
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def _project_via_freecad(solid, p) -> list | None:
+    """Project side view via FreeCAD headless (Draft.make_shape_2d_view).
+
+    Steps:
+      1. Export the OCC solid to a temp STEP file.
+      2. Run FreeCADCmd.exe with a tiny projection script.
+      3. Read the resulting DXF back with ezdxf.
+      4. Detect orientation (tall vs wide) from bounding box vs overall_length
+         and normalise to our convention: DXF-X = axial, DXF-Y = radial.
+
+    Returns list of ('line',(z1,x1,z2,x2)) / ('polyline',[(z,x),...]),
+    or None if FreeCAD is not installed or the run fails.
+    """
+    cmd = _find_freecad_cmd()
+    if cmd is None:
+        return None
+
+    from OCP.STEPControl import STEPControl_Writer, STEPControl_AsIs
+    from OCP.Interface import Interface_Static
+
+    with tempfile.TemporaryDirectory() as tmp:
+        step_p   = os.path.join(tmp, "drill.step")
+        dxf_p    = os.path.join(tmp, "proj.dxf")
+        script_p = os.path.join(tmp, "fc_proj.py")
+
+        # ── 1. Export solid to STEP ──────────────────────────────────────────
+        writer = STEPControl_Writer()
+        Interface_Static.SetCVal_s("write.step.schema", "AP203")
+        writer.Transfer(solid, STEPControl_AsIs())
+        if writer.Write(step_p) != 1:
+            return None
+
+        # ── 2. Write FreeCAD script ──────────────────────────────────────────
+        # Use raw strings for paths so backslashes survive.
+        sp = step_p.replace("\\", "/")
+        dp = dxf_p.replace("\\", "/")
+        script = (
+            "import FreeCAD, Part, Draft, importDXF, sys\n"
+            "try:\n"
+            "    doc = FreeCAD.newDocument()\n"
+            f"    shape = Part.read(r'{sp}')\n"
+            "    feat = doc.addObject('Part::Feature', 'Drill')\n"
+            "    feat.Shape = shape\n"
+            "    doc.recompute()\n"
+            "    proj = Draft.make_shape_2d_view(feat, FreeCAD.Vector(0, 1, 0))\n"
+            "    doc.recompute()\n"
+            f"    importDXF.export([proj], r'{dp}')\n"
+            "    print('FREECAD_OK')\n"
+            "except Exception as e:\n"
+            "    print(f'FREECAD_ERR: {e}', file=sys.stderr)\n"
+            "    sys.exit(1)\n"
+        )
+        with open(script_p, "w", encoding="utf-8") as f:
+            f.write(script)
+
+        # ── 3. Run FreeCAD headless ──────────────────────────────────────────
+        flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        try:
+            res = subprocess.run(
+                [cmd, script_p],
+                capture_output=True, text=True, timeout=120,
+                creationflags=flags,
+            )
+        except subprocess.TimeoutExpired:
+            return None
+
+        if "FREECAD_OK" not in res.stdout or not os.path.isfile(dxf_p):
+            return None
+
+        # ── 4. Parse DXF → entity list ───────────────────────────────────────
+        try:
+            fc_doc = ezdxf.readfile(dxf_p)
+        except Exception:
+            return None
+
+        raw = []        # list of ('line'/(x,y,x,y)) or ('polyline'/[(x,y),...])
+        all_xs, all_ys = [], []
+
+        for ent in fc_doc.modelspace():
+            if "hidden" in (ent.dxf.layer or "").lower():
+                continue
+            try:
+                t = ent.dxftype()
+                if t == "LINE":
+                    s, e = ent.dxf.start, ent.dxf.end
+                    raw.append(("line", (s.x, s.y, e.x, e.y)))
+                    all_xs += [s.x, e.x]; all_ys += [s.y, e.y]
+                elif t in ("LWPOLYLINE", "POLYLINE"):
+                    if t == "LWPOLYLINE":
+                        verts = list(ent.get_points(format="xy"))
+                    else:
+                        verts = [(v.dxf.location.x, v.dxf.location.y)
+                                 for v in ent.vertices]
+                    raw.append(("polyline", verts))
+                    for x, y in verts:
+                        all_xs.append(x); all_ys.append(y)
+                elif t == "ARC":
+                    cx, cy, r = ent.dxf.center.x, ent.dxf.center.y, ent.dxf.radius
+                    a1 = math.radians(ent.dxf.start_angle)
+                    a2 = math.radians(ent.dxf.end_angle)
+                    if a2 <= a1:
+                        a2 += 2 * math.pi
+                    n = max(8, int((a2 - a1) * r / 0.1))
+                    verts = [(cx + r * math.cos(a1 + (a2 - a1) * k / n),
+                              cy + r * math.sin(a1 + (a2 - a1) * k / n))
+                             for k in range(n + 1)]
+                    raw.append(("polyline", verts))
+                    for x, y in verts:
+                        all_xs.append(x); all_ys.append(y)
+                elif t == "SPLINE":
+                    verts = [(pt[0], pt[1]) for pt in ent.approximate(segments=64)]
+                    if len(verts) >= 2:
+                        raw.append(("polyline", verts))
+                        for x, y in verts:
+                            all_xs.append(x); all_ys.append(y)
+            except Exception:
+                pass
+
+        if not raw or not all_xs:
+            return None
+
+        # ── 5. Orient so drill axis = DXF-X (horizontal in AutoCAD) ─────────
+        # FreeCAD may output the view with axial direction along X or Y.
+        # Detect which by comparing span against p.overall_length.
+        x_span = max(all_xs) - min(all_xs)
+        y_span = max(all_ys) - min(all_ys)
+        L      = p.overall_length
+        # If Y-span is closer to overall_length, Y is axial → swap X↔Y.
+        axial_is_y = abs(y_span - L) < abs(x_span - L)
+
+        entities = []
+        for kind, data in raw:
+            if kind == "line":
+                x1, y1, x2, y2 = data
+                if axial_is_y:
+                    entities.append(("line", (y1, x1, y2, x2)))
+                else:
+                    entities.append(("line", (x1, y1, x2, y2)))
+            else:
+                if axial_is_y:
+                    entities.append(("polyline", [(y, x) for x, y in data]))
+                else:
+                    entities.append(("polyline", data))
+
+        return entities or None
+
+
 def _clean_side_segments(segs, q: float = 0.02, min_len: float = 0.02):
     """De-noise the projected side view.
 
@@ -1121,8 +1294,11 @@ def _build_geometry_dxf(p: DrillProposalParams, geom_path: str, *,
     if _mesh_cb:
         _mesh_cb(mesh_data['v'], mesh_data['i'])
 
-    _p(68, "Exact BRep projection (may take 20-40s)…")
-    hlr_entities = _project_via_hlr_exact(solid, p)
+    _p(68, "FreeCAD projection…")
+    hlr_entities = _project_via_freecad(solid, p)
+    if hlr_entities is None:
+        _p(68, "Exact BRep projection (FreeCAD not found, fallback)…")
+        hlr_entities = _project_via_hlr_exact(solid, p)
 
     _p(78, "Writing DXF…")
     feature = max(p.overall_length, p.cutting_diameter * 4.0,
