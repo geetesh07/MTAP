@@ -891,9 +891,12 @@ def _project_via_nodejs(mesh_data: dict) -> dict:
 # ══════════════════════════════════════════════════════ FreeCAD projection ══
 
 _FREECAD_SEARCH_PATHS = [
+    r"C:\Program Files\FreeCAD 1.1\bin\freecadcmd.exe",
     r"C:\Program Files\FreeCAD 1.0\bin\FreeCADCmd.exe",
+    r"C:\Program Files\FreeCAD 1.0\bin\freecadcmd.exe",
     r"C:\Program Files\FreeCAD 0.21\bin\FreeCADCmd.exe",
     r"C:\Program Files\FreeCAD 0.20\bin\FreeCADCmd.exe",
+    r"C:\Program Files (x86)\FreeCAD 1.1\bin\freecadcmd.exe",
     r"C:\Program Files (x86)\FreeCAD 1.0\bin\FreeCADCmd.exe",
     r"C:\Program Files (x86)\FreeCAD 0.21\bin\FreeCADCmd.exe",
     "/usr/bin/freecadcmd",
