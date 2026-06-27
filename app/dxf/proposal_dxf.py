@@ -951,20 +951,20 @@ def _project_via_freecad(solid, p) -> list | None:
 
         # ── 2. Write FreeCAD script ──────────────────────────────────────────
         # Use raw strings for paths so backslashes survive.
-        sp = step_p.replace("\\", "/")
+        sp = step_p.replace("\\", "/")   # FreeCAD reads forward-slash paths reliably
         dp = dxf_p.replace("\\", "/")
         script = (
             "import FreeCAD, Part, Draft, importDXF, sys\n"
             "try:\n"
             "    doc = FreeCAD.newDocument()\n"
-            f"    shape = Part.read(r'{sp}')\n"
+            f"    shape = Part.read('{sp}')\n"
             "    feat = doc.addObject('Part::Feature', 'Drill')\n"
             "    feat.Shape = shape\n"
             "    doc.recompute()\n"
             "    _fn = getattr(Draft,'make_shape2dview',None) or getattr(Draft,'make_shape_2d_view',None) or Draft.makeShape2DView\n"
             "    proj = _fn(feat, FreeCAD.Vector(0, 1, 0))\n"
             "    doc.recompute()\n"
-            f"    importDXF.export([proj], r'{dp}')\n"
+            f"    importDXF.export([proj], '{dp}')\n"
             "    print('FREECAD_OK')\n"
             "except Exception as e:\n"
             "    print(f'FREECAD_ERR: {e}', file=sys.stderr)\n"
