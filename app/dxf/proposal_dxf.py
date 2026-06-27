@@ -887,8 +887,17 @@ def _add_dims(msp, p, rc, rs, h):
 def _add_end_view(msp, p, rc: float, front_cx: float, solid) -> None:
     """Drill end view: OD circle + solid-projected cutting lips + chisel edge."""
     msp.add_circle((front_cx, 0.0), rc, dxfattribs={"layer": "FRONT"})
-    for x1, y1, x2, y2 in _end_view_from_solid(solid, p, rc, cx=front_cx, cy=0.0):
-        msp.add_line((x1, y1), (x2, y2), dxfattribs={"layer": "FRONT"})
+    end_segs = _end_view_from_solid(solid, p, rc, cx=front_cx, cy=0.0)
+    # Reorder to (z,x) convention expected by _chain_segments, chain, then output
+    end_segs_zx = [(y1, x1, y2, x2) for x1, y1, x2, y2 in end_segs]
+    for chain in _chain_segments(end_segs_zx):
+        pts_xy = [(x, z) for z, x in chain]
+        if len(pts_xy) < 2:
+            continue
+        if len(pts_xy) == 2:
+            msp.add_line(pts_xy[0], pts_xy[1], dxfattribs={"layer": "FRONT"})
+        else:
+            msp.add_lwpolyline(pts_xy, dxfattribs={"layer": "FRONT"})
 
 
 def _project_od_flute_edges(solid, rc, *, tol=0.06, n_samp=120, z_min=None):
@@ -1012,11 +1021,16 @@ def _build_geometry_dxf(p: DrillProposalParams, geom_path: str, *,
     msp = doc.modelspace()
     _ensure_layers(doc)
 
-    # Draw every segment as an individual LINE — exactly what _prove_hlr.py does.
-    # No filtering: trust HLR completely. The back face vertical line,
-    # chamfer edges and all body geometry come through as-is.
-    for z1, x1, z2, x2 in all_segs:
-        msp.add_line((z1, x1), (z2, x2), dxfattribs={"layer": "OUTLINE"})
+    # Chain healed segments into polylines so endpoints are mathematically
+    # coincident — no visible gap at any zoom level in AutoCAD.
+    for chain in _chain_segments(all_segs):
+        pts = [(z, x) for z, x in chain]
+        if len(pts) < 2:
+            continue
+        if len(pts) == 2:
+            msp.add_line(pts[0], pts[1], dxfattribs={"layer": "OUTLINE"})
+        else:
+            msp.add_lwpolyline(pts, dxfattribs={"layer": "OUTLINE"})
 
     _add_end_view(msp, p, rc, front_cx, solid)
     _add_centerlines(msp, p, rc, front_cx, front_r, pad)
