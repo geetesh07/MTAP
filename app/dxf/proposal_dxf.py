@@ -444,10 +444,9 @@ def _tessellate(shape) -> dict:
 def _hlr_poly_tessellate(solid):
     """Tessellate solid for PolyAlgo HLR (idempotent — OCC skips if already done)."""
     from OCP.BRepMesh import BRepMesh_IncrementalMesh
-    # 0.02 mm linear / 0.1 rad angular — fine enough for a 10-mm drill tip without
-    # blowing up on a 100-mm body.  BRepMesh is idempotent: the second call (for the
-    # end view) is a no-op because the triangulation is cached in the shape.
-    BRepMesh_IncrementalMesh(solid, 0.02, False, 0.1, True)
+    # 0.01 mm linear / 0.03 rad angular — finer than before so chord length on a
+    # 5 mm radius is ≤ 0.15 mm, keeping projected gaps well below the heal tolerance.
+    BRepMesh_IncrementalMesh(solid, 0.01, False, 0.03, True)
 
 
 def _hlr_poly_extract(ts) -> list:
@@ -602,6 +601,21 @@ def _end_view_from_solid(solid, p, rc: float, *,
             exp.Next()
 
     return segs
+
+
+def _quantize_segs(segs: list, q: float = 0.001) -> list:
+    """Snap every endpoint to the nearest q-mm grid point.
+
+    Eliminates floating-point residue (< 0.001 mm) left after HLR projection,
+    making endpoints that should be coincident exactly coincident before chaining.
+    """
+    out = []
+    for z1, x1, z2, x2 in segs:
+        z1 = round(z1 / q) * q;  x1 = round(x1 / q) * q
+        z2 = round(z2 / q) * q;  x2 = round(x2 / q) * q
+        if (z1, x1) != (z2, x2):
+            out.append((z1, x1, z2, x2))
+    return out
 
 
 def _heal_segs(segs: list, *, snap_tol: float = 0.20) -> list:
@@ -888,8 +902,10 @@ def _add_end_view(msp, p, rc: float, front_cx: float, solid) -> None:
     """Drill end view: OD circle + solid-projected cutting lips + chisel edge."""
     msp.add_circle((front_cx, 0.0), rc, dxfattribs={"layer": "FRONT"})
     end_segs = _end_view_from_solid(solid, p, rc, cx=front_cx, cy=0.0)
-    # Reorder to (z,x) convention expected by _chain_segments, chain, then output
     end_segs_zx = [(y1, x1, y2, x2) for x1, y1, x2, y2 in end_segs]
+    end_segs_zx = _quantize_segs(end_segs_zx)
+    end_segs_zx = _heal_segs(end_segs_zx, snap_tol=0.35)
+    end_segs_zx = _quantize_segs(end_segs_zx)
     for chain in _chain_segments(end_segs_zx):
         pts_xy = [(x, z) for z, x in chain]
         if len(pts_xy) < 2:
@@ -1004,7 +1020,9 @@ def _build_geometry_dxf(p: DrillProposalParams, geom_path: str, *,
     all_segs = _project_via_hlr(solid)
 
     _p(72, "Healing gaps…")
-    all_segs = _heal_segs(all_segs)
+    all_segs = _quantize_segs(all_segs)          # snap FP residue to 0.001 mm grid
+    all_segs = _heal_segs(all_segs, snap_tol=0.35)  # bridge gaps up to 0.35 mm
+    all_segs = _quantize_segs(all_segs)          # snap bridge endpoints too
 
     _p(78, "Writing DXF…")
     feature = max(p.overall_length, p.cutting_diameter * 4.0,
