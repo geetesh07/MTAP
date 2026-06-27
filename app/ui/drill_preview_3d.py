@@ -124,7 +124,6 @@ class DrillPreview3D(QOpenGLWidget):
         fmt.setVersion(3, 3)
         fmt.setProfile(QSurfaceFormat.OpenGLContextProfile.CompatibilityProfile)
         fmt.setDepthBufferSize(24)
-        QSurfaceFormat.setDefaultFormat(fmt)
 
         super().__init__(parent)
         self.setFormat(fmt)
