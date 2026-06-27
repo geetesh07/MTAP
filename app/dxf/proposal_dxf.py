@@ -817,6 +817,7 @@ def _ensure_layers(doc):
     # Colours: drill model = yellow(2), centreline = cyan(4), dims = red(1)
     specs = [
         ("OUTLINE", 2),   ("FRONT", 2),   ("CENTER", 4),   ("DIM", 1),
+        ("COMPARE", 3),   # green — Node.js comparison view (toggle to compare)
     ]
     for name, color in specs:
         if name not in doc.layers:
@@ -1049,6 +1050,44 @@ def _build_geometry_dxf(p: DrillProposalParams, geom_path: str, *,
             msp.add_line(pts[0], pts[1], dxfattribs={"layer": "OUTLINE"})
         else:
             msp.add_lwpolyline(pts, dxfattribs={"layer": "OUTLINE"})
+
+    # ── Node.js comparison view (same X range, offset in Y = radial direction) ──
+    # Placed on the COMPARE layer so it can be toggled off independently in AutoCAD.
+    # Only drawn when Node.js is available on PATH; silently skipped otherwise.
+    _y_off = rc * 3.5 + 15.0          # gap between main view top (+rc) and compare bottom
+    try:
+        _p(79, "Node.js comparison…")
+        _njs = _project_via_nodejs(mesh_data)
+        _ns  = _njs['side']
+        _ns  = [(z1, x1 + _y_off, z2, x2 + _y_off) for z1, x1, z2, x2 in _ns]
+        _ns  = _quantize_segs(_ns)
+        _ns  = _heal_segs(_ns, snap_tol=0.35)
+        _ns  = _quantize_segs(_ns)
+        for _chain in _chain_segments(_ns):
+            _cpts = [(z, x) for z, x in _chain]
+            if len(_cpts) < 2:
+                continue
+            if len(_cpts) == 2:
+                msp.add_line(_cpts[0], _cpts[1], dxfattribs={"layer": "COMPARE"})
+            else:
+                msp.add_lwpolyline(_cpts, dxfattribs={"layer": "COMPARE"})
+        # Centreline for the comparison view
+        msp.add_line(
+            (0.0, _y_off), (p.overall_length, _y_off),
+            dxfattribs={"layer": "CENTER", "linetype": "CENTER"},
+        )
+        # Labels so it's obvious which view is which
+        _lx = p.overall_length * 0.5
+        msp.add_text("HLR", dxfattribs={
+            "layer": "COMPARE", "height": h,
+            "insert": (_lx, -rc - h * 3.5),
+        })
+        msp.add_text("Node.js", dxfattribs={
+            "layer": "COMPARE", "height": h,
+            "insert": (_lx, _y_off - rc - h * 3.5),
+        })
+    except Exception as _e:
+        pass  # Node.js not available or failed — comparison view omitted
 
     _add_end_view(msp, p, rc, front_cx, solid)
     _add_centerlines(msp, p, rc, front_cx, front_r, pad)
