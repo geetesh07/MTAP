@@ -529,6 +529,110 @@ def _project_via_hlr(solid, *, skip_od_radius: float | None = None) -> list:
     return _clean_side_segments(segs)
 
 
+def _project_via_hlr_exact(solid, p) -> list:
+    """Exact BRep HLR side-view projection.
+
+    Uses HLRBRep_Algo (not PolyAlgo) — works on analytical BRep geometry, not a
+    tessellated mesh.  No triangle-boundary gaps are possible because we never use
+    a mesh.
+
+    nbIso=0 skips isoparametric (face-interior) lines, which are noise for a
+    technical drawing and were the main source of slowness in earlier attempts.
+
+    Curve sampling uses GCPnts_UniformDeflection (OCC adaptive curvature-aware
+    sampler) instead of uniform parameter steps, so the resulting polylines follow
+    the true curve geometry with ≤ 0.01 mm deviation.
+
+    Returns a list of DXF entity descriptors:
+        ('line',     (z1, x1, z2, x2))   — write as LINE
+        ('polyline', [(z, x), ...])       — write as LWPOLYLINE
+    Coordinate convention: z = axial (DXF X), x = radial (DXF Y).
+    """
+    from OCP.HLRBRep import HLRBRep_Algo, HLRBRep_HLRToShape
+    from OCP.HLRAlgo import HLRAlgo_Projector
+    from OCP.gp import gp_Ax2, gp_Pnt, gp_Dir
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopoDS import TopoDS
+    from OCP.GeomAbs import GeomAbs_Line
+    from OCP.GCPnts import GCPnts_UniformDeflection
+
+    # Projection along +Y; view-X = world X (radial), view-Y = world -Z (axial)
+    proj = HLRAlgo_Projector(
+        gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 1, 0), gp_Dir(1, 0, 0))
+    )
+
+    algo = HLRBRep_Algo()
+    algo.Add(solid, 0)      # nbIso=0 — no isoparametric lines, much faster
+    algo.Projector(proj)
+    algo.Update()
+    algo.Hide()
+
+    ts = HLRBRep_HLRToShape(algo)
+
+    entities = []
+    min_len   = 0.02    # drop sub-pixel stubs
+
+    for compound in (ts.VCompound(), ts.OutLineVCompound(), ts.Rg1LineVCompound()):
+        try:
+            if compound.IsNull():
+                continue
+        except Exception:
+            continue
+
+        exp = TopExp_Explorer(compound, TopAbs_EDGE)
+        while exp.More():
+            edge = TopoDS.Edge_s(exp.Current())
+            try:
+                c  = BRepAdaptor_Curve(edge)
+                u0 = c.FirstParameter()
+                u1 = c.LastParameter()
+                if abs(u1 - u0) < 1e-10:
+                    exp.Next(); continue
+
+                if c.GetType() == GeomAbs_Line:
+                    p0 = c.Value(u0)
+                    p1 = c.Value(u1)
+                    z1, x1 = -p0.Y(), p0.X()
+                    z2, x2 = -p1.Y(), p1.X()
+                    if math.hypot(z2 - z1, x2 - x1) >= min_len:
+                        entities.append(('line', (z1, x1, z2, x2)))
+                else:
+                    # Adaptive sampling — ≤ 0.01 mm deviation from true curve
+                    sampler = GCPnts_UniformDeflection()
+                    sampler.Initialize(c, 0.01)
+                    sampler.Perform()
+                    if not sampler.IsDone() or sampler.NbPoints() < 2:
+                        exp.Next(); continue
+                    pts = []
+                    for k in range(1, sampler.NbPoints() + 1):
+                        P = c.Value(sampler.Parameter(k))
+                        pts.append((-P.Y(), P.X()))
+                    if len(pts) >= 2:
+                        entities.append(('polyline', pts))
+            except Exception:
+                pass
+            exp.Next()
+
+    # Close the tip region analytically — HLRBRep_Algo has no BRep edge at the
+    # very apex (z=0) because the cutting-lip edge starts at z≈point_length*0.1.
+    # Add two explicit lines from (z_point_base, ±rc) to (z_tip, 0) so the
+    # outline closes perfectly without depending on mesh coverage.
+    try:
+        rc      = p.cutting_diameter / 2.0
+        z_pb    = p.x_point_base          # z-coord where cone meets body
+        ha      = math.radians(p.point_angle / 2.0)
+        tip_len = rc / math.tan(ha)       # axial length of the cone
+        z_tip   = z_pb - tip_len          # tip apex z (may be slightly < 0)
+        entities.append(('line', (z_pb, +rc, z_tip, 0.0)))
+        entities.append(('line', (z_pb, -rc, z_tip, 0.0)))
+    except Exception:
+        pass
+
+    return entities
+
+
 def _end_view_from_solid(solid, p, rc: float, *,
                           cx: float = 0.0, cy: float = 0.0) -> list:
     """HLR end-view projection looking along +Z (viewer at z=-∞, tip closest).
@@ -1017,13 +1121,8 @@ def _build_geometry_dxf(p: DrillProposalParams, geom_path: str, *,
     if _mesh_cb:
         _mesh_cb(mesh_data['v'], mesh_data['i'])
 
-    _p(68, "HLR projection…")
-    all_segs = _project_via_hlr(solid)
-
-    _p(72, "Healing gaps…")
-    all_segs = _quantize_segs(all_segs)          # snap FP residue to 0.001 mm grid
-    all_segs = _heal_segs(all_segs, snap_tol=0.35)  # bridge gaps up to 0.35 mm
-    all_segs = _quantize_segs(all_segs)          # snap bridge endpoints too
+    _p(68, "Exact BRep projection (may take 20-40s)…")
+    hlr_entities = _project_via_hlr_exact(solid, p)
 
     _p(78, "Writing DXF…")
     feature = max(p.overall_length, p.cutting_diameter * 4.0,
@@ -1040,16 +1139,16 @@ def _build_geometry_dxf(p: DrillProposalParams, geom_path: str, *,
     msp = doc.modelspace()
     _ensure_layers(doc)
 
-    # Chain healed segments into polylines so endpoints are mathematically
-    # coincident — no visible gap at any zoom level in AutoCAD.
-    for chain in _chain_segments(all_segs):
-        pts = [(z, x) for z, x in chain]
-        if len(pts) < 2:
-            continue
-        if len(pts) == 2:
-            msp.add_line(pts[0], pts[1], dxfattribs={"layer": "OUTLINE"})
+    # Write exact BRep entities: LINE for line edges (zero gaps by construction),
+    # LWPOLYLINE for curved edges (adaptively sampled at ≤0.01 mm deviation).
+    for kind, data in hlr_entities:
+        if kind == 'line':
+            z1, x1, z2, x2 = data
+            msp.add_line((z1, x1), (z2, x2), dxfattribs={"layer": "OUTLINE"})
         else:
-            msp.add_lwpolyline(pts, dxfattribs={"layer": "OUTLINE"})
+            pts = data
+            if len(pts) >= 2:
+                msp.add_lwpolyline(pts, dxfattribs={"layer": "OUTLINE"})
 
     # ── Node.js comparison view (same X range, offset in Y = radial direction) ──
     # Placed on the COMPARE layer so it can be toggled off independently in AutoCAD.
